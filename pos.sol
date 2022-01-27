@@ -17,15 +17,15 @@ contract ValidatorSet {
         uint256 endBlock;
         uint256 totalUserStakes;
         uint256 totalRewards;
-        uint256 totalValidatorSelfStakes;
+        uint256 totalSelfStakes;
     }
 
     struct Validator {
         address owner;
         address payout;
-        address signer;
+        address coinbase;
         uint256 commission;
-        string name;
+        bytes32 name;
         uint256 selfStake;
     }
 
@@ -36,6 +36,7 @@ contract ValidatorSet {
         uint256 endEpoch;
         bool active;
         uint256 amount;
+        VoteType voteType;
     }
 
     struct UserVotes {
@@ -43,7 +44,13 @@ contract ValidatorSet {
         Vote[] user_votes;
     }
 
+    struct ValidatorVotes {
+        address validator;
+        Vote[] user_votes;
+    }
+
     UserVotes[] public userVotes;
+    ValidatorVotes[] public validatorVotes;
     Validator[] public validatorList;
 
     struct Stake {
@@ -63,6 +70,11 @@ contract ValidatorSet {
     enum BalanceTypes {
         LOCKED,
         UNLOCKED
+    }
+
+    enum VoteType {
+        SELFSTAKE,
+        USERSTAKE
     }
 
     mapping(uint256 => EpochInfo) internal _epochList;
@@ -99,14 +111,14 @@ contract ValidatorSet {
         _;
     }
 
-    function BecomeAValidator(
+    function candidateValidatorApply(
         address payout,
-        address signer,
+        address coinbase,
         uint256 commission,
-        string memory name,
+        bytes32 name,
         uint256 selfStake
     ) public returns (uint256) {
-        require(!_validator[signer], "Signer already in validator list");
+        require(!_validator[coinbase], "Signer already in validator list");
         require(selfStake >= minimumSelfStake, "minimumSelfStake Problem");
         require(
             _userBalance[msg.sender][BalanceTypes.UNLOCKED] >= minimumSelfStake,
@@ -118,13 +130,15 @@ contract ValidatorSet {
         validatorList[vIndex] = Validator(
             msg.sender,
             payout,
-            signer,
+            coinbase,
             commission,
             name,
             selfStake
         );
-        _validatorIndex[signer] = vIndex;
-        _validator[signer] = true;
+        _validatorIndex[coinbase] = vIndex;
+        _validator[coinbase] = true;
+
+        setVote(coinbase, selfStake, 365, VoteType.SELFSTAKE);
 
         return vIndex;
     }
@@ -148,11 +162,11 @@ contract ValidatorSet {
     /// Deposit Coin
     receive() external payable {
         require(!_blacklistedAccount[msg.sender], "You are in the blacklist!");
-        _stake(msg.value);
+        _depositMoney(msg.value);
     }
 
-    /// Staking
-    function _stake(uint256 _amount) internal {
+    /// deposit
+    function _depositMoney(uint256 _amount) internal {
         require(_amount > 0, "Cannot stake!");
 
         uint256 timestamp = block.timestamp;
@@ -186,7 +200,8 @@ contract ValidatorSet {
     function setVote(
         address validator,
         uint256 amount,
-        uint256 epoch
+        uint256 epoch,
+        VoteType voteType
     ) public onlyStakers returns (bool) {
         require(_validator[validator], "Wrong Validator??");
         require(
@@ -199,14 +214,26 @@ contract ValidatorSet {
         uint256 startEpoch = _getNextEpoch();
         uint256 endEpoch = startEpoch + epoch;
         userVotes[index].user_votes.push(
-            Vote(msg.sender, validator, startEpoch, endEpoch, true, amount)
+            Vote(
+                msg.sender,
+                validator,
+                startEpoch,
+                endEpoch,
+                true,
+                amount,
+                voteType
+            )
         );
 
         for (uint256 i = startEpoch; i <= endEpoch; i++) {
             if (_epochList[i].epoch == 0) {
                 _EpochInit(i);
             }
-            _epochList[i].totalUserStakes += amount;
+            if (voteType == VoteType.SELFSTAKE) {
+                _epochList[i].totalSelfStakes += amount;
+            } else {
+                _epochList[i].totalUserStakes += amount;
+            }
         }
 
         _userBalance[msg.sender][BalanceTypes.LOCKED].add(amount);
@@ -230,7 +257,7 @@ contract ValidatorSet {
         return nextEpoch;
     }
 
-    function _EpochInit(uint256 _epoch) internal returns (bool) {
+    function _EpochInit(uint256 _epoch) internal {
         if (_epochList[_epoch].epoch == 0) {
             _epochList[_epoch] = EpochInfo(
                 _epoch,
@@ -241,7 +268,6 @@ contract ValidatorSet {
                 0
             );
         }
-        return true;
     }
 
     function getVote(address validator) public view returns (uint256) {
