@@ -1,2 +1,0 @@
-# PoS
-PoS Smart Contract

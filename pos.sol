@@ -1,32 +1,41 @@
 // SPDX-License-Identifier: GPL-3.0
-
-pragma solidity >=0.8.0 <0.9.0;
+pragma solidity >=0.8 .7 <0.9 .0;
 
 import {SafeMath} from "./SafeMath.sol";
 
-contract ValidatorSet {
+contract PoSSystem {
     using SafeMath for uint256;
+    mapping(address => bool) private _validator;
+    mapping(address => mapping(address => uint256)) private _validatorSey;
+    mapping(address => uint256) private _validatorIndex;
+    mapping(address => mapping(uint256 => uint256))        private _EpochStakesForValidator;
+    mapping(uint256 => mapping(address => uint256))        private _ValidatorStakesForEpoch;
 
-    mapping(address => bool) public _validator;
-    mapping(address => mapping(address => uint256)) public _validatorSey;
-    mapping(address => uint256) public _validatorIndex;
-
-    struct EpochInfo {
+    struct Epoch {
         uint256 epoch;
-        uint256 startBlock;
-        uint256 endBlock;
-        uint256 totalUserStakes;
         uint256 totalRewards;
         uint256 totalSelfStakes;
+        uint256 totalUserStakes;
+        uint256 totalRewardScore;
+    }
+
+    mapping(uint256 => mapping(uint256 => uint256)) public validatorsOfEpochs;
+
+    struct EpochValidator {
+        address coinbase;
+        uint256 selfStake;
     }
 
     struct Validator {
         address owner;
-        address payout;
         address coinbase;
         uint256 commission;
-        bytes32 name;
+        string name;
         uint256 selfStake;
+        uint256 firstEpoch;
+        uint256 finalEpoch;
+        bool resigned;
+        bool expired;
     }
 
     struct Vote {
@@ -49,9 +58,11 @@ contract ValidatorSet {
         Vote[] user_votes;
     }
 
-    UserVotes[] public userVotes;
-    ValidatorVotes[] public validatorVotes;
-    Validator[] public validatorList;
+    UserVotes[] private userVotes;
+    ValidatorVotes[] private validatorVotes;
+    Validator[] private validatorList;
+
+    mapping(address => address) CoinbaseOwners;
 
     struct Stake {
         address user;
@@ -67,6 +78,24 @@ contract ValidatorSet {
 
     UserStake[] internal userStakes;
 
+    mapping(uint256 => Epoch) public _epochList;
+    mapping(address => uint256) private _userIndex;
+    mapping(address => uint256) private _userVotesIndex;
+
+    mapping(address => mapping(BalanceTypes => uint256)) private _userBalance;
+    mapping(address => bool) private _blacklistedAccount;
+
+    // Events
+
+    event DepositMoney(
+        address indexed user,
+        uint256 amount,
+        uint256 index,
+        uint256 epoch
+    );
+
+    // Enums
+
     enum BalanceTypes {
         LOCKED,
         UNLOCKED
@@ -76,74 +105,337 @@ contract ValidatorSet {
         SELFSTAKE,
         USERSTAKE
     }
+    uint256 private _totalStakes;
 
-    mapping(uint256 => EpochInfo) internal _epochList;
-    mapping(address => uint256) internal _userIndex;
-    mapping(address => uint256) internal _userVotesIndex;
+    uint256 public constant minimumSelfStake = 1000 * 10**18;
+    uint256 private constant blockTime = 15;
+    uint256 private constant EpochTime = (24 * 60 * 60) / blockTime;
+    uint256 private constant VotingTime = (23 * 60 * 60) / blockTime;
+    uint256 private constant epochFirstBlock = 100000;
+    uint256 private constant maximumEpochForVotes = 15; // 15 epoch
+    uint256 private constant maximumEpochForValidators = 30; // 30 epoch
 
-    mapping(address => bool) internal _userActive;
-    mapping(address => mapping(BalanceTypes => uint256)) internal _userBalance;
+    uint256 private fakeNextEpoch = 0;
+    uint256 public initilazedLastEpoch = 0;
 
-    event Staked(
-        address indexed user,
-        uint256 amount,
-        uint256 index,
-        uint256 timestamp
-    );
+    struct ResignBalance {
+        uint256 releaseEpoch;
+        uint256 amount;
+    }
 
-    mapping(address => bool) private _blacklistedAccount;
+    // Validator Resign
+    mapping(uint256 => ResignBalance) public ResignBalances;
 
-    uint256 internal _totalStake;
-
-    uint256 minimumSelfStake = 10000 * 10**18;
-    uint256 blockTime = 15;
-    uint256 EpochTime = (24 * 60 * 60) / blockTime;
-    uint256 VotingTime = (23 * 60 * 60) / blockTime;
-    uint256 epochFirstBlock = 100000;
+    error NotEnoughBalance(uint256 minimum, uint256 balance);
 
     constructor() {
         userStakes.push(); // 0-empty
         userVotes.push();
+        validatorList.push();
+        fakeNextEpoch = 1;
+        epochInit();
     }
 
     modifier onlyStakers() {
-        require(_userActive[msg.sender], "You are not staker!");
+        require(_userIndex[msg.sender] > 0, "You are not staker!");
         _;
     }
 
-    function candidateValidatorApply(
-        address payout,
+    modifier CoinbaseOwner(address coinbase) {
+        require(
+            CoinbaseOwners[coinbase] == msg.sender,
+            "You are not validator owner!"
+        );
+        _;
+    }
+
+    // TEST PURPOSE //////////////////////////////////////////////////////////////////////////////////////////////
+    function putSomeMoney(address _who, uint256 _amount) public returns (bool) {
+        return _depositMoney(_who, _amount);
+    }
+
+    // ////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+    // / Deposit
+    receive() external payable {
+        require(msg.value > 0, "Ho ho ho!");
+
+        // require(!_blacklistedAccount[msg.sender], "You are in the blacklist!");
+        _depositMoney(msg.sender, msg.value);
+    }
+
+    // / deposit
+    function _depositMoney(address _who, uint256 _amount)
+        internal
+        returns (bool)
+    {
+        uint256 epoch = _calculateNextEpoch();
+        uint256 index = _userIndex[_who];
+
+        if (index == 0) {
+            index = _addStakeholder(_who);
+        }
+
+        userStakes[index].address_stakes.push(Stake(_who, _amount, epoch, 0));
+
+        _totalStakes = _totalStakes.add(_amount);
+        _userBalance[_who][BalanceTypes.UNLOCKED] = _userBalance[_who][
+            BalanceTypes.UNLOCKED
+        ].add(_amount);
+
+        emit DepositMoney(_who, _amount, index, epoch);
+        return true;
+    }
+
+    function applyCandidate(
         address coinbase,
         uint256 commission,
-        bytes32 name,
+        string memory name,
         uint256 selfStake
     ) public returns (uint256) {
-        require(!_validator[coinbase], "Signer already in validator list");
+        require(!_validator[coinbase], "Coinbase is already in the list");
         require(selfStake >= minimumSelfStake, "minimumSelfStake Problem");
+
         require(
             _userBalance[msg.sender][BalanceTypes.UNLOCKED] >= minimumSelfStake,
             "User Balance is not enough for minimumSelfStake"
         );
 
+        // if (
+        //     _userBalance[msg.sender][BalanceTypes.UNLOCKED] < minimumSelfStake
+        // ) {
+        //     revert NotEnoughBalance(
+        //         minimumSelfStake,
+        //         _userBalance[msg.sender][BalanceTypes.UNLOCKED]
+        //     );
+        // }
+
         validatorList.push();
         uint256 vIndex = validatorList.length - 1;
+
+        if (vIndex == 0) {
+            revert("Aooo");
+        }
+
+        uint256 firstEpoch = _calculateNextEpoch();
+        uint256 finalEpoch = firstEpoch + maximumEpochForValidators - 1;
+
         validatorList[vIndex] = Validator(
             msg.sender,
-            payout,
             coinbase,
             commission,
             name,
-            selfStake
+            selfStake,
+            firstEpoch,
+            finalEpoch,
+            false,
+            false
         );
+
         _validatorIndex[coinbase] = vIndex;
         _validator[coinbase] = true;
+        CoinbaseOwners[coinbase] = msg.sender;
 
-        setVote(coinbase, selfStake, 365, VoteType.SELFSTAKE);
+        _userBalance[msg.sender][BalanceTypes.LOCKED] = _userBalance[
+            msg.sender
+        ][BalanceTypes.LOCKED].add(selfStake);
+        _userBalance[msg.sender][BalanceTypes.UNLOCKED] = _userBalance[
+            msg.sender
+        ][BalanceTypes.UNLOCKED].sub(selfStake);
+
+        for (uint256 i = 0; i < maximumEpochForValidators; i = i + 1) {
+            if (_epochList[firstEpoch + i].epoch == 0) {
+                _EpochInit(firstEpoch + i);
+            }
+            _epochList[firstEpoch + i].totalSelfStakes = _epochList[
+                firstEpoch + i
+            ].totalSelfStakes.add(selfStake);
+            validatorsOfEpochs[firstEpoch + i][vIndex] = selfStake;
+        }
+
+        // setVote(
+        //     coinbase,
+        //     selfStake,
+        //     maximumEpochForValidators,
+        //     VoteType.SELFSTAKE
+        // );
 
         return vIndex;
     }
 
-    function getValidator(uint256 index)
+    // Validator can extend itself candidate period
+    function extendCandidate(
+        address coinbase,
+        uint256 newFinalEpoch,
+        uint256 increaseSelfStake
+    ) public CoinbaseOwner(coinbase) returns (bool) {
+        uint256 vIndex = _getValidatorIndexByAddress(coinbase);
+
+        require(!validatorList[vIndex].resigned, "You are resigned");
+        require(!validatorList[vIndex].expired, "You are expired");
+
+        // require(ResignBalances[vIndex].epoch == 0, "You are resigned");
+
+        if (validatorList[vIndex].owner != msg.sender) {
+            revert("You are not owner of that validator");
+        }
+        uint256 selfStake = validatorList[vIndex].selfStake;
+        uint256 newSelfStake = selfStake;
+
+        require(
+            _userBalance[msg.sender][BalanceTypes.UNLOCKED] >=
+                increaseSelfStake,
+            "You have to deposit for increase"
+        );
+
+        uint256 oldFinalEpoch = validatorList[vIndex].finalEpoch;
+        uint256 nextEpoch = _calculateNextEpoch();
+
+        require(
+            oldFinalEpoch >= nextEpoch,
+            "You can not extend that coinbase, it is expired"
+        );
+
+        if (newFinalEpoch - nextEpoch > maximumEpochForValidators) {
+            newFinalEpoch = nextEpoch + maximumEpochForValidators - 1;
+        }
+
+        validatorList[vIndex].finalEpoch = newFinalEpoch;
+
+        if (increaseSelfStake != 0) {
+            _userBalance[msg.sender][BalanceTypes.UNLOCKED] = _userBalance[
+                msg.sender
+            ][BalanceTypes.UNLOCKED].sub(increaseSelfStake);
+            _userBalance[msg.sender][BalanceTypes.LOCKED] = _userBalance[
+                msg.sender
+            ][BalanceTypes.LOCKED].add(increaseSelfStake);
+            newSelfStake = selfStake.add(increaseSelfStake);
+            validatorList[vIndex].selfStake = newSelfStake;
+        }
+
+        for (
+            uint256 epoch = nextEpoch;
+            epoch <= newFinalEpoch;
+            epoch = epoch + 1
+        ) {
+            // if (_epochList[epoch].epoch == 0) {
+            //     _EpochInit(epoch);
+            // }
+
+            validatorsOfEpochs[epoch][vIndex] = newSelfStake;
+
+            if (epoch <= oldFinalEpoch && increaseSelfStake > 0) {
+                _epochList[epoch].totalSelfStakes = _epochList[epoch]
+                    .totalSelfStakes
+                    .add(increaseSelfStake);
+            }
+
+            if (epoch > oldFinalEpoch) {
+                _epochList[epoch].totalSelfStakes = _epochList[epoch]
+                    .totalSelfStakes
+                    .add(newSelfStake);
+            }
+        }
+
+        return true;
+    }
+
+    function resignCandidate(address coinbase, uint256 newFinalEpoch)
+        public
+        CoinbaseOwner(coinbase)
+        returns (bool)
+    {
+        uint256 nextEpoch = _calculateNextEpoch(); // next epoch
+        require(
+            newFinalEpoch < nextEpoch + 7,
+            "You can not resign before next 7 epochs"
+        );
+
+        uint256 vIndex = _getValidatorIndexByAddress(coinbase);
+        require(
+            ResignBalances[vIndex].releaseEpoch == 0,
+            "You already resigned"
+        );
+
+        uint256 oldFinalEpoch = validatorList[vIndex].finalEpoch;
+        if (newFinalEpoch > oldFinalEpoch) {
+            revert("You dont need to resign");
+        }
+        validatorList[vIndex].finalEpoch = newFinalEpoch;
+        for (
+            uint256 epoch = oldFinalEpoch + 1;
+            epoch <= newFinalEpoch;
+            epoch = epoch + 1
+        ) {
+            delete validatorsOfEpochs[epoch][vIndex];
+        }
+
+        // Unbound
+        ResignBalances[vIndex] = ResignBalance(
+            newFinalEpoch.add(1),
+            validatorList[vIndex].selfStake
+        );
+
+        validatorList[vIndex].resigned = true;
+
+        return true;
+    }
+
+    function unlockSelfStake(address coinbase)
+        public
+        CoinbaseOwner(coinbase)
+        returns (bool)
+    {
+        uint256 vIndex = _getValidatorIndexByAddress(coinbase);
+
+        if (validatorList[vIndex].owner != msg.sender) {
+            revert("You are not owner of that validator");
+        }
+
+        require(validatorList[vIndex].resigned, "You are not resigned");
+
+        uint256 nextEpoch = _calculateNextEpoch(); // next epoch
+
+        if (
+            ResignBalances[vIndex].releaseEpoch != 0 &&
+            ResignBalances[vIndex].releaseEpoch < nextEpoch &&
+            _userBalance[msg.sender][BalanceTypes.LOCKED] > 0
+        ) {
+            uint256 lockedSelfStake = ResignBalances[vIndex].amount;
+            _userBalance[msg.sender][BalanceTypes.UNLOCKED] = _userBalance[
+                msg.sender
+            ][BalanceTypes.UNLOCKED].add(lockedSelfStake);
+            _userBalance[msg.sender][BalanceTypes.LOCKED] = _userBalance[
+                msg.sender
+            ][BalanceTypes.LOCKED].sub(lockedSelfStake);
+            delete ResignBalances[vIndex];
+        }
+
+        return true;
+    }
+
+    function getMyUnlockedBalance() public view returns (uint256) {
+        require(_userIndex[msg.sender] > 0, "You are not stake holder");
+        return _userBalance[msg.sender][BalanceTypes.UNLOCKED];
+    }
+
+    function getMyLockedBalance() public view returns (uint256) {
+        require(_userIndex[msg.sender] > 0, "You are not stake holder");
+        return _userBalance[msg.sender][BalanceTypes.LOCKED];
+    }
+
+    function _getValidatorIndexByAddress(address who)
+        internal
+        view
+        returns (uint256)
+    {
+        if (_validator[who]) {
+            return _validatorIndex[who];
+        }
+        return 0;
+    }
+
+    function getValidatorByIndex(uint256 index)
         public
         view
         returns (Validator memory)
@@ -159,48 +451,31 @@ contract ValidatorSet {
         return _validatorIndex[validator];
     }
 
-    /// Deposit Coin
-    receive() external payable {
-        require(!_blacklistedAccount[msg.sender], "You are in the blacklist!");
-        _depositMoney(msg.value);
-    }
-
-    /// deposit
-    function _depositMoney(uint256 _amount) internal {
-        require(_amount > 0, "Cannot stake!");
-
-        uint256 timestamp = block.timestamp;
-        uint256 index = _userIndex[msg.sender];
-
-        if (index == 0) {
-            index = _addStakeholder(msg.sender);
+    function addMeAsStackHolder() public returns (bool) {
+        uint256 r = _addStakeholder(msg.sender);
+        if (r != 0) {
+            return true;
         }
-
-        userStakes[index].address_stakes.push(
-            Stake(msg.sender, _amount, timestamp, 0)
-        );
-
-        _totalStake.add(_amount);
-        _userBalance[msg.sender][BalanceTypes.UNLOCKED].add(_amount);
-
-        emit Staked(msg.sender, _amount, index, timestamp);
+        return false;
     }
 
-    /// New User Record
-    function _addStakeholder(address staker) internal returns (uint256) {
+    // / New User Record
+    function _addStakeholder(address _user) internal returns (uint256) {
         userStakes.push();
+        userVotes.push();
         uint256 userIndex = userStakes.length - 1;
-        userStakes[userIndex].user = staker;
-        userVotes[userIndex].user = staker;
-        _userIndex[staker] = userIndex;
-        _userActive[staker] = true;
+        userStakes[userIndex].user = _user;
+        userVotes[userIndex].user = _user;
+        _userIndex[_user] = userIndex;
+        _userBalance[_user][BalanceTypes.UNLOCKED] = 0;
+        _userBalance[_user][BalanceTypes.LOCKED] = 0;
         return userIndex;
     }
 
     function setVote(
         address validator,
         uint256 amount,
-        uint256 epoch,
+        uint256 maximumEpoch,
         VoteType voteType
     ) public onlyStakers returns (bool) {
         require(_validator[validator], "Wrong Validator??");
@@ -209,10 +484,19 @@ contract ValidatorSet {
             "Your unlocked balance is not enough"
         );
 
-        if (epoch == 0) epoch = 365;
+        uint256 maxEpoch = maximumEpochForVotes;
+
+        if (voteType == VoteType.SELFSTAKE) {
+            maxEpoch = maximumEpochForValidators;
+        }
+
+        if (maximumEpoch == 0 || maximumEpoch > maxEpoch) {
+            maximumEpoch = maxEpoch;
+        }
+
         uint256 index = _userIndex[msg.sender];
-        uint256 startEpoch = _getNextEpoch();
-        uint256 endEpoch = startEpoch + epoch;
+        uint256 startEpoch = _calculateNextEpoch();
+        uint256 endEpoch = startEpoch + maximumEpoch;
         userVotes[index].user_votes.push(
             Vote(
                 msg.sender,
@@ -225,48 +509,88 @@ contract ValidatorSet {
             )
         );
 
-        for (uint256 i = startEpoch; i <= endEpoch; i++) {
+        for (uint256 i = startEpoch; i <= endEpoch; i = i + 1) {
             if (_epochList[i].epoch == 0) {
                 _EpochInit(i);
             }
             if (voteType == VoteType.SELFSTAKE) {
-                _epochList[i].totalSelfStakes += amount;
+                _epochList[i].totalSelfStakes.add(amount);
             } else {
-                _epochList[i].totalUserStakes += amount;
+                _epochList[i].totalUserStakes.add(amount);
             }
         }
 
-        _userBalance[msg.sender][BalanceTypes.LOCKED].add(amount);
-        _userBalance[msg.sender][BalanceTypes.UNLOCKED].sub(amount);
+        _userBalance[msg.sender][BalanceTypes.LOCKED] = _userBalance[
+            msg.sender
+        ][BalanceTypes.LOCKED].add(amount);
+        _userBalance[msg.sender][BalanceTypes.UNLOCKED] = _userBalance[
+            msg.sender
+        ][BalanceTypes.UNLOCKED].sub(amount);
 
-        //_validatorSey[validator][msg.sender] = amount;
+        // _validatorSey[validator][msg.sender] = amount;
 
         return true;
     }
 
-    function _getNextEpoch() internal view returns (uint256) {
-        uint256 blockNumber = block.number - epochFirstBlock; // 125334
-        uint256 checkBlockNumber = blockNumber % EpochTime; //4374
-        uint256 nextEpoch = ((blockNumber - checkBlockNumber) / EpochTime) + 1; // ((125334-4374)/5760)+1 = 22
+    function _setFakeNextEpoch(uint256 epoch) public returns (bool) {
+        fakeNextEpoch = epoch;
+        return true;
+    }
 
+    function _calculateNextEpoch() public view returns (uint256) {
+        if (fakeNextEpoch != 0) {
+            return fakeNextEpoch;
+        }
+
+        uint256 blockNumber = block.number - epochFirstBlock; // 125334
+        uint256 checkBlockNumber = blockNumber % EpochTime; // 4374
+        uint256 nextEpoch = ((blockNumber - checkBlockNumber) / EpochTime) + 1;
+
+        // ((125334-4374)/5760)+1 = 22
         // 5520..5760
         if (checkBlockNumber >= VotingTime) {
-            nextEpoch++;
+            nextEpoch = nextEpoch + 1;
         }
+
         // 22 = 126720 to 132480
         return nextEpoch;
     }
 
+    function getAllValidators() public view returns (Validator[] memory) {
+        return validatorList;
+    }
+
+    // / Epoch Initalize --- maximumEpochForValidators+7 epoch
+    // / Anyone can do it
+    function epochInit() public returns (uint256, uint256) {
+        uint256 beforeInitilazedLastEpoch = initilazedLastEpoch;
+        uint256 nextEpoch = _calculateNextEpoch();
+        if (
+            initilazedLastEpoch == 0 ||
+            ((initilazedLastEpoch - nextEpoch) <
+                (maximumEpochForValidators + 7))
+        ) {
+            uint256 newInits = 0;
+            if (initilazedLastEpoch == 0) {
+                newInits = maximumEpochForValidators + 7;
+            } else {
+                newInits =
+                    maximumEpochForValidators +
+                    7 -
+                    (initilazedLastEpoch - nextEpoch);
+            }
+            for (uint256 i = 0; i < newInits; i = i + 1) {
+                initilazedLastEpoch = initilazedLastEpoch + 1;
+                _EpochInit(initilazedLastEpoch);
+            }
+        }
+        return (beforeInitilazedLastEpoch, initilazedLastEpoch);
+    }
+
     function _EpochInit(uint256 _epoch) internal {
         if (_epochList[_epoch].epoch == 0) {
-            _epochList[_epoch] = EpochInfo(
-                _epoch,
-                epochFirstBlock + (_epoch * EpochTime),
-                epochFirstBlock + ((_epoch + 1) * EpochTime) - 1,
-                0,
-                0,
-                0
-            );
+            _epochList[_epoch] = Epoch(_epoch, 0, 0, 0, 0);
+            validatorsOfEpochs[_epoch][0] = 0;
         }
     }
 
