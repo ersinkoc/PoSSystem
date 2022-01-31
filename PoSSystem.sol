@@ -5,7 +5,6 @@ import {SafeMath} from "./SafeMath.sol";
 
 contract PoSSystem {
     using SafeMath for uint256;
-    mapping(address => bool) private _validator;
     mapping(address => mapping(address => uint256)) private _validatorSey;
     mapping(address => uint256) private _validatorIndex;
     mapping(address => mapping(uint256 => uint256))        private _EpochStakesForValidator;
@@ -19,7 +18,8 @@ contract PoSSystem {
         uint256 totalRewardScore;
     }
 
-    mapping(uint256 => mapping(uint256 => uint256)) public validatorsOfEpochs;
+    // epoch -> ( validator_index -> self_stake )
+    mapping(uint256 => mapping(uint256 => uint256)) public selfstakeByValidatorAtEpoch;
 
     struct EpochValidator {
         address coinbase;
@@ -38,6 +38,9 @@ contract PoSSystem {
         bool expired;
     }
 
+    Validator[] private validatorList;
+
+
     struct Vote {
         address user;
         address validator;
@@ -53,44 +56,63 @@ contract PoSSystem {
         Vote[] user_votes;
     }
 
+    UserVotes[] private userVotes;
+
     struct ValidatorVotes {
         address validator;
         Vote[] user_votes;
     }
 
-    UserVotes[] private userVotes;
     ValidatorVotes[] private validatorVotes;
-    Validator[] private validatorList;
 
     mapping(address => address) CoinbaseOwners;
 
-    struct Stake {
+
+    struct User{
         address user;
+        uint256 totalRewards;
+    }
+
+    User[] private userList;
+
+    struct UserInfos{
+        uint256 index;
+        address user;
+        uint256 totalRewards;
+        uint256 lockedBalance;
+        uint256 unlockedBalance;
+    }
+
+    /// User deposits
+
+    struct Deposit {
+        //address user;
         uint256 amount;
-        uint256 since;
-        uint256 claimable;
+        uint256 epoch;
     }
 
-    struct UserStake {
+    struct UserDeposit {
         address user;
-        Stake[] address_stakes;
+        Deposit[] user_deposits;
     }
 
-    UserStake[] internal userStakes;
+    UserDeposit[] internal userDeposits;
+
+    ///
 
     mapping(uint256 => Epoch) public _epochList;
+
     mapping(address => uint256) private _userIndex;
-    mapping(address => uint256) private _userVotesIndex;
 
     mapping(address => mapping(BalanceTypes => uint256)) private _userBalance;
+
     mapping(address => bool) private _blacklistedAccount;
 
     // Events
 
-    event DepositMoney(
+    event Deposited(
         address indexed user,
         uint256 amount,
-        uint256 index,
         uint256 epoch
     );
 
@@ -105,9 +127,9 @@ contract PoSSystem {
         SELFSTAKE,
         USERSTAKE
     }
-    uint256 private _totalStakes;
+    uint256 private _totalDeposits;
 
-    uint256 public constant minimumSelfStake = 1000 * 10**18;
+    uint256 public constant minimumSelfStake = 10000 * 10**18;
     uint256 private constant blockTime = 15;
     uint256 private constant EpochTime = (24 * 60 * 60) / blockTime;
     uint256 private constant VotingTime = (23 * 60 * 60) / blockTime;
@@ -123,16 +145,16 @@ contract PoSSystem {
         uint256 amount;
     }
 
-    // Validator Resign
     mapping(uint256 => ResignBalance) public ResignBalances;
 
     error NotEnoughBalance(uint256 minimum, uint256 balance);
 
     constructor() {
-        userStakes.push(); // 0-empty
-        userVotes.push();
-        validatorList.push();
-        fakeNextEpoch = 1;
+        userList.push(); // 0-empty
+        userDeposits.push(); // 0-empty
+        userVotes.push(); // 0-empty
+        validatorList.push(); // 0-empty
+        _setFakeNextEpoch(1);
         epochInit();
     }
 
@@ -176,16 +198,23 @@ contract PoSSystem {
             index = _addStakeholder(_who);
         }
 
-        userStakes[index].address_stakes.push(Stake(_who, _amount, epoch, 0));
+        userDeposits[index].user_deposits.push(Deposit(_amount, epoch));
 
-        _totalStakes = _totalStakes.add(_amount);
+        _totalDeposits = _totalDeposits.add(_amount);
         _userBalance[_who][BalanceTypes.UNLOCKED] = _userBalance[_who][
             BalanceTypes.UNLOCKED
         ].add(_amount);
 
-        emit DepositMoney(_who, _amount, index, epoch);
+        emit Deposited(_who, _amount, epoch);
         return true;
     }
+
+    function getMyDeposits() public view returns(UserDeposit memory){ 
+        uint256 uIndex = _userIndex[msg.sender];
+        require(uIndex!=0, "You are not stake holder");
+        return userDeposits[uIndex];
+    }
+
 
     function applyCandidate(
         address coinbase,
@@ -193,7 +222,7 @@ contract PoSSystem {
         string memory name,
         uint256 selfStake
     ) public returns (uint256) {
-        require(!_validator[coinbase], "Coinbase is already in the list");
+        require(_validatorIndex[coinbase]==0, "Coinbase is already in the list");
         require(selfStake >= minimumSelfStake, "minimumSelfStake Problem");
 
         require(
@@ -233,7 +262,6 @@ contract PoSSystem {
         );
 
         _validatorIndex[coinbase] = vIndex;
-        _validator[coinbase] = true;
         CoinbaseOwners[coinbase] = msg.sender;
 
         _userBalance[msg.sender][BalanceTypes.LOCKED] = _userBalance[
@@ -245,12 +273,12 @@ contract PoSSystem {
 
         for (uint256 i = 0; i < maximumEpochForValidators; i = i + 1) {
             if (_epochList[firstEpoch + i].epoch == 0) {
-                _EpochInit(firstEpoch + i);
+                _epochInitalize(firstEpoch + i);
             }
             _epochList[firstEpoch + i].totalSelfStakes = _epochList[
                 firstEpoch + i
             ].totalSelfStakes.add(selfStake);
-            validatorsOfEpochs[firstEpoch + i][vIndex] = selfStake;
+            selfstakeByValidatorAtEpoch[firstEpoch + i][vIndex] = selfStake;
         }
 
         // setVote(
@@ -269,7 +297,7 @@ contract PoSSystem {
         uint256 newFinalEpoch,
         uint256 increaseSelfStake
     ) public CoinbaseOwner(coinbase) returns (bool) {
-        uint256 vIndex = _getValidatorIndexByAddress(coinbase);
+        uint256 vIndex = _getValidatorIndex(coinbase);
 
         require(!validatorList[vIndex].resigned, "You are resigned");
         require(!validatorList[vIndex].expired, "You are expired");
@@ -319,10 +347,10 @@ contract PoSSystem {
             epoch = epoch + 1
         ) {
             // if (_epochList[epoch].epoch == 0) {
-            //     _EpochInit(epoch);
+            //     _epochInitalize(epoch);
             // }
 
-            validatorsOfEpochs[epoch][vIndex] = newSelfStake;
+            selfstakeByValidatorAtEpoch[epoch][vIndex] = newSelfStake;
 
             if (epoch <= oldFinalEpoch && increaseSelfStake > 0) {
                 _epochList[epoch].totalSelfStakes = _epochList[epoch]
@@ -351,7 +379,7 @@ contract PoSSystem {
             "You can not resign before next 7 epochs"
         );
 
-        uint256 vIndex = _getValidatorIndexByAddress(coinbase);
+        uint256 vIndex = _getValidatorIndex(coinbase);
         require(
             ResignBalances[vIndex].releaseEpoch == 0,
             "You already resigned"
@@ -367,7 +395,7 @@ contract PoSSystem {
             epoch <= newFinalEpoch;
             epoch = epoch + 1
         ) {
-            delete validatorsOfEpochs[epoch][vIndex];
+            delete selfstakeByValidatorAtEpoch[epoch][vIndex];
         }
 
         // Unbound
@@ -386,7 +414,7 @@ contract PoSSystem {
         CoinbaseOwner(coinbase)
         returns (bool)
     {
-        uint256 vIndex = _getValidatorIndexByAddress(coinbase);
+        uint256 vIndex = _getValidatorIndex(coinbase);
 
         if (validatorList[vIndex].owner != msg.sender) {
             revert("You are not owner of that validator");
@@ -424,15 +452,12 @@ contract PoSSystem {
         return _userBalance[msg.sender][BalanceTypes.LOCKED];
     }
 
-    function _getValidatorIndexByAddress(address who)
+    function _getValidatorIndex(address who)
         internal
         view
         returns (uint256)
     {
-        if (_validator[who]) {
             return _validatorIndex[who];
-        }
-        return 0;
     }
 
     function getValidatorByIndex(uint256 index)
@@ -451,34 +476,42 @@ contract PoSSystem {
         return _validatorIndex[validator];
     }
 
-    function addMeAsStackHolder() public returns (bool) {
+    function addMeAsStackHolder() public returns (uint256) {
         uint256 r = _addStakeholder(msg.sender);
-        if (r != 0) {
-            return true;
-        }
-        return false;
+        return r;
     }
 
     // / New User Record
     function _addStakeholder(address _user) internal returns (uint256) {
-        userStakes.push();
-        userVotes.push();
-        uint256 userIndex = userStakes.length - 1;
-        userStakes[userIndex].user = _user;
-        userVotes[userIndex].user = _user;
-        _userIndex[_user] = userIndex;
-        _userBalance[_user][BalanceTypes.UNLOCKED] = 0;
-        _userBalance[_user][BalanceTypes.LOCKED] = 0;
-        return userIndex;
+        uint256 uIndex = _userIndex[_user];
+
+        if(uIndex == 0){
+            userList.push();
+            userDeposits.push();
+            userVotes.push();
+
+            uIndex = userList.length - 1;
+
+            userList[uIndex] = User(_user, 0);
+            userDeposits[uIndex].user = _user;
+            userVotes[uIndex].user = _user;
+
+            _userIndex[_user] = uIndex;
+
+            _userBalance[_user][BalanceTypes.UNLOCKED] = 0;
+            _userBalance[_user][BalanceTypes.LOCKED] = 0;
+        }
+
+        return uIndex;
     }
 
     function setVote(
-        address validator,
+        address validator_coinbase,
         uint256 amount,
         uint256 maximumEpoch,
         VoteType voteType
     ) public onlyStakers returns (bool) {
-        require(_validator[validator], "Wrong Validator??");
+        require(_validatorIndex[validator_coinbase]!=0, "Wrong Validator??");
         require(
             _userBalance[msg.sender][BalanceTypes.UNLOCKED] >= amount,
             "Your unlocked balance is not enough"
@@ -500,7 +533,7 @@ contract PoSSystem {
         userVotes[index].user_votes.push(
             Vote(
                 msg.sender,
-                validator,
+                validator_coinbase,
                 startEpoch,
                 endEpoch,
                 true,
@@ -511,7 +544,7 @@ contract PoSSystem {
 
         for (uint256 i = startEpoch; i <= endEpoch; i = i + 1) {
             if (_epochList[i].epoch == 0) {
-                _EpochInit(i);
+                _epochInitalize(i);
             }
             if (voteType == VoteType.SELFSTAKE) {
                 _epochList[i].totalSelfStakes.add(amount);
@@ -560,8 +593,39 @@ contract PoSSystem {
         return validatorList;
     }
 
+      function getUserList(uint256 _page,uint256 _resultsPerPage ) public view returns (uint256, UserInfos[] memory){
+        require(_resultsPerPage<=10, "Maximum 10 User per Page");
+        uint256 _ulIndex = _resultsPerPage * _page - _resultsPerPage + 1;
+
+        UserInfos memory emptyUserInfo = UserInfos(0,address(0),0,0,0);
+
+        if (userList.length == 1 || _ulIndex > userList.length) {
+             UserInfos[] memory _emptyReturn = new UserInfos[](1);
+              _emptyReturn[0] = emptyUserInfo;
+            return (0,_emptyReturn);
+        }
+
+        UserInfos[] memory _ulReturn = new UserInfos[](_resultsPerPage);
+        uint256 _returnCounter = 0;
+        for (_ulIndex; _ulIndex < _resultsPerPage * _page; _ulIndex++) {
+            if (_ulIndex < userList.length) {
+                 _ulReturn[_returnCounter] = UserInfos(
+                    _ulIndex,
+                    userList[_ulIndex].user,
+                    userList[_ulIndex].totalRewards,
+                    _userBalance[userList[_ulIndex].user][BalanceTypes.LOCKED],
+                    _userBalance[userList[_ulIndex].user][BalanceTypes.UNLOCKED]
+                );
+            } else {
+                _ulReturn[_returnCounter] = emptyUserInfo;
+            }
+        _returnCounter++;
+        }
+        return (userList.length, _ulReturn);
+    }
+
     // / Epoch Initalize --- maximumEpochForValidators+7 epoch
-    // / Anyone can do it
+    // / Anyone Call 
     function epochInit() public returns (uint256, uint256) {
         uint256 beforeInitilazedLastEpoch = initilazedLastEpoch;
         uint256 nextEpoch = _calculateNextEpoch();
@@ -581,16 +645,16 @@ contract PoSSystem {
             }
             for (uint256 i = 0; i < newInits; i = i + 1) {
                 initilazedLastEpoch = initilazedLastEpoch + 1;
-                _EpochInit(initilazedLastEpoch);
+                _epochInitalize(initilazedLastEpoch);
             }
         }
         return (beforeInitilazedLastEpoch, initilazedLastEpoch);
     }
 
-    function _EpochInit(uint256 _epoch) internal {
+    function _epochInitalize(uint256 _epoch) internal {
         if (_epochList[_epoch].epoch == 0) {
             _epochList[_epoch] = Epoch(_epoch, 0, 0, 0, 0);
-            validatorsOfEpochs[_epoch][0] = 0;
+            selfstakeByValidatorAtEpoch[_epoch][0] = 0;
         }
     }
 
