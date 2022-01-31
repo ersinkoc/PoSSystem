@@ -589,7 +589,7 @@ contract PoSSystem {
         return nextEpoch;
     }
 
-    function getAllValidators(uint256 _page,uint256 _resultsPerPage) public view returns (uint256, Validator[] memory) {
+    function getValidatorList(uint256 _page,uint256 _resultsPerPage) public view returns (uint256, Validator[] memory) {
         require(_resultsPerPage<=20, "Maximum 20 Validator per Page");
         uint256 _vlIndex = _resultsPerPage * _page - _resultsPerPage + 1;
         Validator memory emptyValidatorInfo = Validator(address(0),address(0),0,"",0,0,0,false,false);
@@ -604,13 +604,13 @@ contract PoSSystem {
         uint256 _returnCounter = 0;
         for (_vlIndex; _vlIndex < _resultsPerPage * _page; _vlIndex++) {
             if (_vlIndex < validatorList.length) {
-                 _vlReturn[_returnCounter] = validatorList[_vlIndex+1];
+                 _vlReturn[_returnCounter] = validatorList[_vlIndex];
             } else {
                 _vlReturn[_returnCounter] = emptyValidatorInfo;
             }
         _returnCounter++;
         }
-        return (validatorList.length, _vlReturn);
+        return (validatorList.length-1, _vlReturn);
     }
 
       function getUserList(uint256 _page,uint256 _resultsPerPage ) public view returns (uint256, UserInfos[] memory){
@@ -641,7 +641,7 @@ contract PoSSystem {
             }
         _returnCounter++;
         }
-        return (userList.length, _ulReturn);
+        return (userList.length-1, _ulReturn);
     }
 
     // / Epoch Initalize --- maximumEpochForValidators+7 epoch
