@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0
-pragma solidity >=0.8 .7 <0.9 .0;
+pragma solidity >=0.8.7 <0.9 .0;
 
 import {SafeMath} from "./SafeMath.sol";
 
@@ -7,8 +7,8 @@ contract PoSSystem {
     using SafeMath for uint256;
     mapping(address => mapping(address => uint256)) private _validatorSey;
     mapping(address => uint256) private _validatorIndex;
-    mapping(address => mapping(uint256 => uint256))        private _EpochStakesForValidator;
-    mapping(uint256 => mapping(address => uint256))        private _ValidatorStakesForEpoch;
+    mapping(address => mapping(uint256 => uint256)) private _EpochStakesForValidator;
+    mapping(uint256 => mapping(address => uint256)) private _ValidatorStakesForEpoch;
 
     struct Epoch {
         uint256 epoch;
@@ -589,12 +589,32 @@ contract PoSSystem {
         return nextEpoch;
     }
 
-    function getAllValidators() public view returns (Validator[] memory) {
-        return validatorList;
+    function getAllValidators(uint256 _page,uint256 _resultsPerPage) public view returns (uint256, Validator[] memory) {
+        require(_resultsPerPage<=20, "Maximum 20 Validator per Page");
+        uint256 _vlIndex = _resultsPerPage * _page - _resultsPerPage + 1;
+        Validator memory emptyValidatorInfo = Validator(address(0),address(0),0,"",0,0,0,false,false);
+
+        if (validatorList.length == 1 || _vlIndex > validatorList.length) {
+             Validator[] memory _emptyReturn = new Validator[](1);
+              _emptyReturn[0] = emptyValidatorInfo;
+            return (0,_emptyReturn);
+        }
+
+        Validator[] memory _vlReturn = new Validator[](_resultsPerPage);
+        uint256 _returnCounter = 0;
+        for (_vlIndex; _vlIndex < _resultsPerPage * _page; _vlIndex++) {
+            if (_vlIndex < validatorList.length) {
+                 _vlReturn[_returnCounter] = validatorList[_vlIndex+1];
+            } else {
+                _vlReturn[_returnCounter] = emptyValidatorInfo;
+            }
+        _returnCounter++;
+        }
+        return (validatorList.length, _vlReturn);
     }
 
       function getUserList(uint256 _page,uint256 _resultsPerPage ) public view returns (uint256, UserInfos[] memory){
-        require(_resultsPerPage<=10, "Maximum 10 User per Page");
+        require(_resultsPerPage<=20, "Maximum 20 User per Page");
         uint256 _ulIndex = _resultsPerPage * _page - _resultsPerPage + 1;
 
         UserInfos memory emptyUserInfo = UserInfos(0,address(0),0,0,0);
