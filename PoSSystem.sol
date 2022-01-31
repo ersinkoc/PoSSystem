@@ -1,5 +1,5 @@
-// SPDX-License-Identifier: GPL-3.0
-pragma solidity >=0.8.7 <0.9 .0;
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
 
 import {SafeMath} from "./SafeMath.sol";
 
@@ -7,8 +7,10 @@ contract PoSSystem {
     using SafeMath for uint256;
     mapping(address => mapping(address => uint256)) private _validatorSey;
     mapping(address => uint256) private _validatorIndex;
-    mapping(address => mapping(uint256 => uint256)) private _EpochStakesForValidator;
-    mapping(uint256 => mapping(address => uint256)) private _ValidatorStakesForEpoch;
+    mapping(address => mapping(uint256 => uint256))
+        private _EpochStakesForValidator;
+    mapping(uint256 => mapping(address => uint256))
+        private _ValidatorStakesForEpoch;
 
     struct Epoch {
         uint256 epoch;
@@ -19,7 +21,8 @@ contract PoSSystem {
     }
 
     // epoch -> ( validator_index -> self_stake )
-    mapping(uint256 => mapping(uint256 => uint256)) public selfstakeByValidatorAtEpoch;
+    mapping(uint256 => mapping(uint256 => uint256))
+        public selfstakeByValidatorAtEpoch;
 
     struct EpochValidator {
         address coinbase;
@@ -39,7 +42,6 @@ contract PoSSystem {
     }
 
     Validator[] private validatorList;
-
 
     struct Vote {
         address user;
@@ -67,15 +69,14 @@ contract PoSSystem {
 
     mapping(address => address) CoinbaseOwners;
 
-
-    struct User{
+    struct User {
         address user;
         uint256 totalRewards;
     }
 
     User[] private userList;
 
-    struct UserInfos{
+    struct UserInfos {
         uint256 index;
         address user;
         uint256 totalRewards;
@@ -110,11 +111,7 @@ contract PoSSystem {
 
     // Events
 
-    event Deposited(
-        address indexed user,
-        uint256 amount,
-        uint256 epoch
-    );
+    event Deposited(address indexed user, uint256 amount, uint256 epoch);
 
     // Enums
 
@@ -209,12 +206,11 @@ contract PoSSystem {
         return true;
     }
 
-    function getMyDeposits() public view returns(UserDeposit memory){ 
+    function getMyDeposits() public view returns (UserDeposit memory) {
         uint256 uIndex = _userIndex[msg.sender];
-        require(uIndex!=0, "You are not stake holder");
+        require(uIndex != 0, "You are not stake holder");
         return userDeposits[uIndex];
     }
-
 
     function applyCandidate(
         address coinbase,
@@ -222,7 +218,10 @@ contract PoSSystem {
         string memory name,
         uint256 selfStake
     ) public returns (uint256) {
-        require(_validatorIndex[coinbase]==0, "Coinbase is already in the list");
+        require(
+            _validatorIndex[coinbase] == 0,
+            "Coinbase is already in the list"
+        );
         require(selfStake >= minimumSelfStake, "minimumSelfStake Problem");
 
         require(
@@ -452,12 +451,8 @@ contract PoSSystem {
         return _userBalance[msg.sender][BalanceTypes.LOCKED];
     }
 
-    function _getValidatorIndex(address who)
-        internal
-        view
-        returns (uint256)
-    {
-            return _validatorIndex[who];
+    function _getValidatorIndex(address who) internal view returns (uint256) {
+        return _validatorIndex[who];
     }
 
     function getValidatorByIndex(uint256 index)
@@ -485,7 +480,7 @@ contract PoSSystem {
     function _addStakeholder(address _user) internal returns (uint256) {
         uint256 uIndex = _userIndex[_user];
 
-        if(uIndex == 0){
+        if (uIndex == 0) {
             userList.push();
             userDeposits.push();
             userVotes.push();
@@ -511,7 +506,7 @@ contract PoSSystem {
         uint256 maximumEpoch,
         VoteType voteType
     ) public onlyStakers returns (bool) {
-        require(_validatorIndex[validator_coinbase]!=0, "Wrong Validator??");
+        require(_validatorIndex[validator_coinbase] != 0, "Wrong Validator??");
         require(
             _userBalance[msg.sender][BalanceTypes.UNLOCKED] >= amount,
             "Your unlocked balance is not enough"
@@ -589,47 +584,65 @@ contract PoSSystem {
         return nextEpoch;
     }
 
-    function getValidatorList(uint256 _page,uint256 _resultsPerPage) public view returns (uint256, Validator[] memory) {
-        require(_resultsPerPage<=20, "Maximum 20 Validator per Page");
+    function getValidatorList(uint256 _page, uint256 _resultsPerPage)
+        public
+        view
+        returns (uint256, Validator[] memory)
+    {
+        require(_resultsPerPage <= 20, "Maximum 20 Validator per Page");
         uint256 _vlIndex = _resultsPerPage * _page - _resultsPerPage + 1;
-        Validator memory emptyValidatorInfo = Validator(address(0),address(0),0,"",0,0,0,false,false);
+        Validator memory emptyValidatorInfo = Validator(
+            address(0),
+            address(0),
+            0,
+            "",
+            0,
+            0,
+            0,
+            false,
+            false
+        );
 
         if (validatorList.length == 1 || _vlIndex > validatorList.length) {
-             Validator[] memory _emptyReturn = new Validator[](1);
-              _emptyReturn[0] = emptyValidatorInfo;
-            return (0,_emptyReturn);
+            Validator[] memory _emptyReturn = new Validator[](1);
+            _emptyReturn[0] = emptyValidatorInfo;
+            return (0, _emptyReturn);
         }
 
         Validator[] memory _vlReturn = new Validator[](_resultsPerPage);
         uint256 _returnCounter = 0;
         for (_vlIndex; _vlIndex < _resultsPerPage * _page; _vlIndex++) {
             if (_vlIndex < validatorList.length) {
-                 _vlReturn[_returnCounter] = validatorList[_vlIndex];
+                _vlReturn[_returnCounter] = validatorList[_vlIndex];
             } else {
                 _vlReturn[_returnCounter] = emptyValidatorInfo;
             }
-        _returnCounter++;
+            _returnCounter++;
         }
-        return (validatorList.length-1, _vlReturn);
+        return (validatorList.length - 1, _vlReturn);
     }
 
-      function getUserList(uint256 _page,uint256 _resultsPerPage ) public view returns (uint256, UserInfos[] memory){
-        require(_resultsPerPage<=20, "Maximum 20 User per Page");
+    function getUserList(uint256 _page, uint256 _resultsPerPage)
+        public
+        view
+        returns (uint256, UserInfos[] memory)
+    {
+        require(_resultsPerPage <= 20, "Maximum 20 User per Page");
         uint256 _ulIndex = _resultsPerPage * _page - _resultsPerPage + 1;
 
-        UserInfos memory emptyUserInfo = UserInfos(0,address(0),0,0,0);
+        UserInfos memory emptyUserInfo = UserInfos(0, address(0), 0, 0, 0);
 
         if (userList.length == 1 || _ulIndex > userList.length) {
-             UserInfos[] memory _emptyReturn = new UserInfos[](1);
-              _emptyReturn[0] = emptyUserInfo;
-            return (0,_emptyReturn);
+            UserInfos[] memory _emptyReturn = new UserInfos[](1);
+            _emptyReturn[0] = emptyUserInfo;
+            return (0, _emptyReturn);
         }
 
         UserInfos[] memory _ulReturn = new UserInfos[](_resultsPerPage);
         uint256 _returnCounter = 0;
         for (_ulIndex; _ulIndex < _resultsPerPage * _page; _ulIndex++) {
             if (_ulIndex < userList.length) {
-                 _ulReturn[_returnCounter] = UserInfos(
+                _ulReturn[_returnCounter] = UserInfos(
                     _ulIndex,
                     userList[_ulIndex].user,
                     userList[_ulIndex].totalRewards,
@@ -639,13 +652,13 @@ contract PoSSystem {
             } else {
                 _ulReturn[_returnCounter] = emptyUserInfo;
             }
-        _returnCounter++;
+            _returnCounter++;
         }
-        return (userList.length-1, _ulReturn);
+        return (userList.length - 1, _ulReturn);
     }
 
     // / Epoch Initalize --- maximumEpochForValidators+7 epoch
-    // / Anyone Call 
+    // / Anyone Call
     function epochInit() public returns (uint256, uint256) {
         uint256 beforeInitilazedLastEpoch = initilazedLastEpoch;
         uint256 nextEpoch = _calculateNextEpoch();
