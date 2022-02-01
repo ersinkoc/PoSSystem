@@ -84,5 +84,9 @@ contract Data {
         USERSTAKE
     }
 
+    enum BalanceChange {
+        ADD,
+        SUB
+    }
     ///
 }
