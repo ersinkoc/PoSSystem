@@ -2,128 +2,37 @@
 pragma solidity ^0.8.0;
 
 import {SafeMath} from "./SafeMath.sol";
+import {Data} from "./Data.sol";
 
 contract PoSSystem {
     using SafeMath for uint256;
     mapping(address => mapping(address => uint256)) private _validatorSey;
-    mapping(address => uint256) private _validatorIndex;
-    mapping(address => mapping(uint256 => uint256))
-        private _EpochStakesForValidator;
-    mapping(uint256 => mapping(address => uint256))
-        private _ValidatorStakesForEpoch;
-
-    struct Epoch {
-        uint256 epoch;
-        uint256 totalRewards;
-        uint256 totalSelfStakes;
-        uint256 totalUserStakes;
-        uint256 totalRewardScore;
-    }
+    mapping(uint256 => Data.Epoch) public _epochList;
 
     // epoch -> ( validator_index -> self_stake )
-    mapping(uint256 => mapping(uint256 => uint256))
-        public selfstakeByValidatorAtEpoch;
+    mapping(uint256 => mapping(uint256 => uint256)) public selfStakesForEpoch;
+    // epoch -> ( validator_index -> user_vote)
+    mapping(uint256 => mapping(uint256 => uint256)) public userVotesForEpoch;
 
-    struct EpochValidator {
-        address coinbase;
-        uint256 selfStake;
-    }
-
-    struct Validator {
-        address owner;
-        address coinbase;
-        uint256 commission;
-        string name;
-        uint256 selfStake;
-        uint256 firstEpoch;
-        uint256 finalEpoch;
-        bool resigned;
-        bool expired;
-    }
-
-    Validator[] private validatorList;
-
-    struct Vote {
-        address user;
-        address validator;
-        uint256 startEpoch;
-        uint256 endEpoch;
-        bool active;
-        uint256 amount;
-        VoteType voteType;
-    }
-
-    struct UserVotes {
-        address user;
-        Vote[] user_votes;
-    }
-
-    UserVotes[] private userVotes;
-
-    struct ValidatorVotes {
-        address validator;
-        Vote[] user_votes;
-    }
-
-    ValidatorVotes[] private validatorVotes;
-
-    mapping(address => address) CoinbaseOwners;
-
-    struct User {
-        address user;
-        uint256 totalRewards;
-    }
-
-    User[] private userList;
-
-    struct UserInfos {
-        uint256 index;
-        address user;
-        uint256 totalRewards;
-        uint256 lockedBalance;
-        uint256 unlockedBalance;
-    }
-
-    /// User deposits
-
-    struct Deposit {
-        //address user;
-        uint256 amount;
-        uint256 epoch;
-    }
-
-    struct UserDeposit {
-        address user;
-        Deposit[] user_deposits;
-    }
-
-    UserDeposit[] internal userDeposits;
-
-    ///
-
-    mapping(uint256 => Epoch) public _epochList;
-
+    Data.User[] private _userList;
     mapping(address => uint256) private _userIndex;
+    mapping(address => mapping(Data.BalanceTypes => uint256))
+        private _userBalance;
 
-    mapping(address => mapping(BalanceTypes => uint256)) private _userBalance;
+    Data.Validator[] private _validatorList;
+    mapping(address => uint256) private _validatorIndex;
+    mapping(address => address) CoinbaseOwners;
+    mapping(uint256 => Data.ResignBalance) public ResignBalances;
+
+    Data.UserVotes[] private userVotes;
+    Data.ValidatorVotes[] private validatorVotes;
+    Data.UserDeposit[] private userDeposits;
+
+    /** Events */
+    event Deposited(address indexed user, uint256 amount, uint256 epoch);
 
     mapping(address => bool) private _blacklistedAccount;
 
-    // Events
-
-    event Deposited(address indexed user, uint256 amount, uint256 epoch);
-
-    // Enums
-
-    enum BalanceTypes {
-        LOCKED,
-        UNLOCKED
-    }
-
-    enum VoteType {
-        SELFSTAKE,
-        USERSTAKE
-    }
     uint256 private _totalDeposits;
 
     uint256 public constant minimumSelfStake = 10000 * 10**18;
@@ -137,20 +46,13 @@ contract PoSSystem {
     uint256 private fakeNextEpoch = 0;
     uint256 public initilazedLastEpoch = 0;
 
-    struct ResignBalance {
-        uint256 releaseEpoch;
-        uint256 amount;
-    }
-
-    mapping(uint256 => ResignBalance) public ResignBalances;
-
     error NotEnoughBalance(uint256 minimum, uint256 balance);
 
     constructor() {
-        userList.push(); // 0-empty
+        _userList.push(); // 0-empty
         userDeposits.push(); // 0-empty
         userVotes.push(); // 0-empty
-        validatorList.push(); // 0-empty
+        _validatorList.push(); // 0-empty
         _setFakeNextEpoch(1);
         epochInit();
     }
@@ -168,14 +70,14 @@ contract PoSSystem {
         _;
     }
 
-    // TEST PURPOSE //////////////////////////////////////////////////////////////////////////////////////////////
+    /** ////////////////////////////////////////////////////////////////////////////////////////////////////////// */
     function putSomeMoney(address _who, uint256 _amount) public returns (bool) {
         return _depositMoney(_who, _amount);
     }
 
-    // ////////////////////////////////////////////////////////////////////////////////////////////////////////////
+    /** ////////////////////////////////////////////////////////////////////////////////////////////////////////// */
 
-    // / Deposit
+    /** Deposit */
     receive() external payable {
         require(msg.value > 0, "Ho ho ho!");
 
@@ -183,7 +85,7 @@ contract PoSSystem {
         _depositMoney(msg.sender, msg.value);
     }
 
-    // / deposit
+    /** Deposit Money */
     function _depositMoney(address _who, uint256 _amount)
         internal
         returns (bool)
@@ -195,24 +97,24 @@ contract PoSSystem {
             index = _addStakeholder(_who);
         }
 
-        userDeposits[index].user_deposits.push(Deposit(_amount, epoch));
+        userDeposits[index].user_deposits.push(Data.Deposit(_amount, epoch));
 
         _totalDeposits = _totalDeposits.add(_amount);
-        _userBalance[_who][BalanceTypes.UNLOCKED] = _userBalance[_who][
-            BalanceTypes.UNLOCKED
+        _userBalance[_who][Data.BalanceTypes.UNLOCKED] = _userBalance[_who][
+            Data.BalanceTypes.UNLOCKED
         ].add(_amount);
 
         emit Deposited(_who, _amount, epoch);
         return true;
     }
 
-    function getMyDeposits() public view returns (UserDeposit memory) {
+    function getMyDeposits() public view returns (Data.UserDeposit memory) {
         uint256 uIndex = _userIndex[msg.sender];
         require(uIndex != 0, "You are not stake holder");
         return userDeposits[uIndex];
     }
 
-    function applyCandidate(
+    function registerValidator(
         address coinbase,
         uint256 commission,
         string memory name,
@@ -220,26 +122,30 @@ contract PoSSystem {
     ) public returns (uint256) {
         require(
             _validatorIndex[coinbase] == 0,
-            "Coinbase is already in the list"
+            "This validator address is already registered!"
         );
-        require(selfStake >= minimumSelfStake, "minimumSelfStake Problem");
+        require(
+            selfStake >= minimumSelfStake,
+            "Self-Stake is not an acceptable amount"
+        );
 
         require(
-            _userBalance[msg.sender][BalanceTypes.UNLOCKED] >= minimumSelfStake,
-            "User Balance is not enough for minimumSelfStake"
+            _userBalance[msg.sender][Data.BalanceTypes.UNLOCKED] >=
+                minimumSelfStake,
+            "You do not have enough unlocked balances for Self-Stake."
         );
 
         // if (
-        //     _userBalance[msg.sender][BalanceTypes.UNLOCKED] < minimumSelfStake
+        //     _userBalance[msg.sender][Data.BalanceTypes.UNLOCKED] < minimumSelfStake
         // ) {
         //     revert NotEnoughBalance(
         //         minimumSelfStake,
-        //         _userBalance[msg.sender][BalanceTypes.UNLOCKED]
+        //         _userBalance[msg.sender][Data.BalanceTypes.UNLOCKED]
         //     );
         // }
 
-        validatorList.push();
-        uint256 vIndex = validatorList.length - 1;
+        _validatorList.push();
+        uint256 vIndex = _validatorList.length - 1;
 
         if (vIndex == 0) {
             revert("Aooo");
@@ -248,7 +154,7 @@ contract PoSSystem {
         uint256 firstEpoch = _calculateNextEpoch();
         uint256 finalEpoch = firstEpoch + maximumEpochForValidators - 1;
 
-        validatorList[vIndex] = Validator(
+        _validatorList[vIndex] = Data.Validator(
             msg.sender,
             coinbase,
             commission,
@@ -263,12 +169,12 @@ contract PoSSystem {
         _validatorIndex[coinbase] = vIndex;
         CoinbaseOwners[coinbase] = msg.sender;
 
-        _userBalance[msg.sender][BalanceTypes.LOCKED] = _userBalance[
+        _userBalance[msg.sender][Data.BalanceTypes.LOCKED] = _userBalance[
             msg.sender
-        ][BalanceTypes.LOCKED].add(selfStake);
-        _userBalance[msg.sender][BalanceTypes.UNLOCKED] = _userBalance[
+        ][Data.BalanceTypes.LOCKED].add(selfStake);
+        _userBalance[msg.sender][Data.BalanceTypes.UNLOCKED] = _userBalance[
             msg.sender
-        ][BalanceTypes.UNLOCKED].sub(selfStake);
+        ][Data.BalanceTypes.UNLOCKED].sub(selfStake);
 
         for (uint256 i = 0; i < maximumEpochForValidators; i = i + 1) {
             if (_epochList[firstEpoch + i].epoch == 0) {
@@ -277,14 +183,14 @@ contract PoSSystem {
             _epochList[firstEpoch + i].totalSelfStakes = _epochList[
                 firstEpoch + i
             ].totalSelfStakes.add(selfStake);
-            selfstakeByValidatorAtEpoch[firstEpoch + i][vIndex] = selfStake;
+            selfStakesForEpoch[firstEpoch + i][vIndex] = selfStake;
         }
 
         // setVote(
         //     coinbase,
         //     selfStake,
         //     maximumEpochForValidators,
-        //     VoteType.SELFSTAKE
+        //     VotingType.SELFSTAKE
         // );
 
         return vIndex;
@@ -298,24 +204,24 @@ contract PoSSystem {
     ) public CoinbaseOwner(coinbase) returns (bool) {
         uint256 vIndex = _getValidatorIndex(coinbase);
 
-        require(!validatorList[vIndex].resigned, "You are resigned");
-        require(!validatorList[vIndex].expired, "You are expired");
+        require(!_validatorList[vIndex].resigned, "You are resigned");
+        require(!_validatorList[vIndex].expired, "You are expired");
 
         // require(ResignBalances[vIndex].epoch == 0, "You are resigned");
 
-        if (validatorList[vIndex].owner != msg.sender) {
+        if (_validatorList[vIndex].owner != msg.sender) {
             revert("You are not owner of that validator");
         }
-        uint256 selfStake = validatorList[vIndex].selfStake;
+        uint256 selfStake = _validatorList[vIndex].selfStake;
         uint256 newSelfStake = selfStake;
 
         require(
-            _userBalance[msg.sender][BalanceTypes.UNLOCKED] >=
+            _userBalance[msg.sender][Data.BalanceTypes.UNLOCKED] >=
                 increaseSelfStake,
             "You have to deposit for increase"
         );
 
-        uint256 oldFinalEpoch = validatorList[vIndex].finalEpoch;
+        uint256 oldFinalEpoch = _validatorList[vIndex].finalEpoch;
         uint256 nextEpoch = _calculateNextEpoch();
 
         require(
@@ -327,17 +233,17 @@ contract PoSSystem {
             newFinalEpoch = nextEpoch + maximumEpochForValidators - 1;
         }
 
-        validatorList[vIndex].finalEpoch = newFinalEpoch;
+        _validatorList[vIndex].finalEpoch = newFinalEpoch;
 
         if (increaseSelfStake != 0) {
-            _userBalance[msg.sender][BalanceTypes.UNLOCKED] = _userBalance[
+            _userBalance[msg.sender][Data.BalanceTypes.UNLOCKED] = _userBalance[
                 msg.sender
-            ][BalanceTypes.UNLOCKED].sub(increaseSelfStake);
-            _userBalance[msg.sender][BalanceTypes.LOCKED] = _userBalance[
+            ][Data.BalanceTypes.UNLOCKED].sub(increaseSelfStake);
+            _userBalance[msg.sender][Data.BalanceTypes.LOCKED] = _userBalance[
                 msg.sender
-            ][BalanceTypes.LOCKED].add(increaseSelfStake);
+            ][Data.BalanceTypes.LOCKED].add(increaseSelfStake);
             newSelfStake = selfStake.add(increaseSelfStake);
-            validatorList[vIndex].selfStake = newSelfStake;
+            _validatorList[vIndex].selfStake = newSelfStake;
         }
 
         for (
@@ -349,7 +255,7 @@ contract PoSSystem {
             //     _epochInitalize(epoch);
             // }
 
-            selfstakeByValidatorAtEpoch[epoch][vIndex] = newSelfStake;
+            selfStakesForEpoch[epoch][vIndex] = newSelfStake;
 
             if (epoch <= oldFinalEpoch && increaseSelfStake > 0) {
                 _epochList[epoch].totalSelfStakes = _epochList[epoch]
@@ -384,26 +290,26 @@ contract PoSSystem {
             "You already resigned"
         );
 
-        uint256 oldFinalEpoch = validatorList[vIndex].finalEpoch;
+        uint256 oldFinalEpoch = _validatorList[vIndex].finalEpoch;
         if (newFinalEpoch > oldFinalEpoch) {
             revert("You dont need to resign");
         }
-        validatorList[vIndex].finalEpoch = newFinalEpoch;
+        _validatorList[vIndex].finalEpoch = newFinalEpoch;
         for (
             uint256 epoch = oldFinalEpoch + 1;
             epoch <= newFinalEpoch;
             epoch = epoch + 1
         ) {
-            delete selfstakeByValidatorAtEpoch[epoch][vIndex];
+            delete selfStakesForEpoch[epoch][vIndex];
         }
 
         // Unbound
-        ResignBalances[vIndex] = ResignBalance(
+        ResignBalances[vIndex] = Data.ResignBalance(
             newFinalEpoch.add(1),
-            validatorList[vIndex].selfStake
+            _validatorList[vIndex].selfStake
         );
 
-        validatorList[vIndex].resigned = true;
+        _validatorList[vIndex].resigned = true;
 
         return true;
     }
@@ -415,26 +321,26 @@ contract PoSSystem {
     {
         uint256 vIndex = _getValidatorIndex(coinbase);
 
-        if (validatorList[vIndex].owner != msg.sender) {
-            revert("You are not owner of that validator");
-        }
+        // if (_validatorList[vIndex].owner != msg.sender) {
+        //     revert("You are not owner of that validator");
+        // }
 
-        require(validatorList[vIndex].resigned, "You are not resigned");
+        require(_validatorList[vIndex].resigned, "You are not resigned");
 
         uint256 nextEpoch = _calculateNextEpoch(); // next epoch
 
         if (
             ResignBalances[vIndex].releaseEpoch != 0 &&
             ResignBalances[vIndex].releaseEpoch < nextEpoch &&
-            _userBalance[msg.sender][BalanceTypes.LOCKED] > 0
+            _userBalance[msg.sender][Data.BalanceTypes.LOCKED] > 0
         ) {
             uint256 lockedSelfStake = ResignBalances[vIndex].amount;
-            _userBalance[msg.sender][BalanceTypes.UNLOCKED] = _userBalance[
+            _userBalance[msg.sender][Data.BalanceTypes.UNLOCKED] = _userBalance[
                 msg.sender
-            ][BalanceTypes.UNLOCKED].add(lockedSelfStake);
-            _userBalance[msg.sender][BalanceTypes.LOCKED] = _userBalance[
+            ][Data.BalanceTypes.UNLOCKED].add(lockedSelfStake);
+            _userBalance[msg.sender][Data.BalanceTypes.LOCKED] = _userBalance[
                 msg.sender
-            ][BalanceTypes.LOCKED].sub(lockedSelfStake);
+            ][Data.BalanceTypes.LOCKED].sub(lockedSelfStake);
             delete ResignBalances[vIndex];
         }
 
@@ -443,12 +349,12 @@ contract PoSSystem {
 
     function getMyUnlockedBalance() public view returns (uint256) {
         require(_userIndex[msg.sender] > 0, "You are not stake holder");
-        return _userBalance[msg.sender][BalanceTypes.UNLOCKED];
+        return _userBalance[msg.sender][Data.BalanceTypes.UNLOCKED];
     }
 
     function getMyLockedBalance() public view returns (uint256) {
         require(_userIndex[msg.sender] > 0, "You are not stake holder");
-        return _userBalance[msg.sender][BalanceTypes.LOCKED];
+        return _userBalance[msg.sender][Data.BalanceTypes.LOCKED];
     }
 
     function _getValidatorIndex(address who) internal view returns (uint256) {
@@ -458,9 +364,9 @@ contract PoSSystem {
     function getValidatorByIndex(uint256 index)
         public
         view
-        returns (Validator memory)
+        returns (Data.Validator memory)
     {
-        return validatorList[index];
+        return _validatorList[index];
     }
 
     function getValidatorIndex(address validator)
@@ -481,79 +387,102 @@ contract PoSSystem {
         uint256 uIndex = _userIndex[_user];
 
         if (uIndex == 0) {
-            userList.push();
+            _userList.push();
             userDeposits.push();
             userVotes.push();
 
-            uIndex = userList.length - 1;
+            uIndex = _userList.length - 1;
 
-            userList[uIndex] = User(_user, 0);
+            _userList[uIndex] = Data.User(_user, 0);
             userDeposits[uIndex].user = _user;
             userVotes[uIndex].user = _user;
 
             _userIndex[_user] = uIndex;
 
-            _userBalance[_user][BalanceTypes.UNLOCKED] = 0;
-            _userBalance[_user][BalanceTypes.LOCKED] = 0;
+            _userBalance[_user][Data.BalanceTypes.UNLOCKED] = 0;
+            _userBalance[_user][Data.BalanceTypes.LOCKED] = 0;
         }
 
         return uIndex;
     }
 
     function setVote(
-        address validator_coinbase,
+        address coinbase,
         uint256 amount,
         uint256 maximumEpoch,
-        VoteType voteType
+        Data.VotingType votingType
     ) public onlyStakers returns (bool) {
-        require(_validatorIndex[validator_coinbase] != 0, "Wrong Validator??");
+        require(_validatorIndex[coinbase] != 0, "Wrong Validator??");
         require(
-            _userBalance[msg.sender][BalanceTypes.UNLOCKED] >= amount,
+            _userBalance[msg.sender][Data.BalanceTypes.UNLOCKED] >= amount,
             "Your unlocked balance is not enough"
         );
 
         uint256 maxEpoch = maximumEpochForVotes;
 
-        if (voteType == VoteType.SELFSTAKE) {
-            maxEpoch = maximumEpochForValidators;
-        }
+        // if (VotingType == VotingType.SELFSTAKE) {
+        //     maxEpoch = maximumEpochForValidators;
+        // }
 
         if (maximumEpoch == 0 || maximumEpoch > maxEpoch) {
             maximumEpoch = maxEpoch;
         }
 
+        uint256 vIndex = _validatorIndex[coinbase];
+        Data.Validator memory v = _validatorList[vIndex];
+        uint256 nextEpoch = _calculateNextEpoch();
+        if (nextEpoch + maximumEpoch - 1 > v.finalEpoch) {
+            maximumEpoch = v.finalEpoch - nextEpoch;
+        }
+
         uint256 index = _userIndex[msg.sender];
-        uint256 startEpoch = _calculateNextEpoch();
+        uint256 startEpoch = nextEpoch;
         uint256 endEpoch = startEpoch + maximumEpoch;
+
+        // struct Vote {
+        //     address user;
+        //     address validator;
+        //     uint256 startEpoch;
+        //     uint256 endEpoch;
+        //     bool active;
+        //     uint256 amount;
+        //     VotingType VotingType;
+        // }
+
         userVotes[index].user_votes.push(
-            Vote(
+            Data.Vote(
                 msg.sender,
-                validator_coinbase,
+                coinbase,
                 startEpoch,
                 endEpoch,
                 true,
                 amount,
-                voteType
+                votingType
             )
         );
 
-        for (uint256 i = startEpoch; i <= endEpoch; i = i + 1) {
-            if (_epochList[i].epoch == 0) {
-                _epochInitalize(i);
+        for (uint256 epoch = startEpoch; epoch <= endEpoch; epoch++) {
+            if (_epochList[epoch].epoch == 0) {
+                _epochInitalize(epoch);
             }
-            if (voteType == VoteType.SELFSTAKE) {
-                _epochList[i].totalSelfStakes.add(amount);
-            } else {
-                _epochList[i].totalUserStakes.add(amount);
-            }
+            // if (VotingType == VotingType.SELFSTAKE) {
+            //     _epochList[i].totalSelfStakes.add(amount);
+            // } else {
+            _epochList[epoch].totalUserStakes = _epochList[epoch]
+                .totalUserStakes
+                .add(amount);
+            // }
+
+            userVotesForEpoch[epoch][vIndex] = userVotesForEpoch[epoch][vIndex]
+                .add(amount);
         }
 
-        _userBalance[msg.sender][BalanceTypes.LOCKED] = _userBalance[
+        _userBalance[msg.sender][Data.BalanceTypes.LOCKED] = _userBalance[
             msg.sender
-        ][BalanceTypes.LOCKED].add(amount);
-        _userBalance[msg.sender][BalanceTypes.UNLOCKED] = _userBalance[
+        ][Data.BalanceTypes.LOCKED].add(amount);
+        _userBalance[msg.sender][Data.BalanceTypes.UNLOCKED] = _userBalance[
             msg.sender
-        ][BalanceTypes.UNLOCKED].sub(amount);
+        ][Data.BalanceTypes.UNLOCKED].sub(amount);
 
         // _validatorSey[validator][msg.sender] = amount;
 
@@ -587,11 +516,11 @@ contract PoSSystem {
     function getValidatorList(uint256 _page, uint256 _resultsPerPage)
         public
         view
-        returns (uint256, Validator[] memory)
+        returns (uint256, Data.Validator[] memory)
     {
-        require(_resultsPerPage <= 20, "Maximum 20 Validator per Page");
+        require(_resultsPerPage <= 20, "Maximum 20 Validators per Page");
         uint256 _vlIndex = _resultsPerPage * _page - _resultsPerPage + 1;
-        Validator memory emptyValidatorInfo = Validator(
+        Data.Validator memory emptyValidatorInfo = Data.Validator(
             address(0),
             address(0),
             0,
@@ -603,58 +532,74 @@ contract PoSSystem {
             false
         );
 
-        if (validatorList.length == 1 || _vlIndex > validatorList.length) {
-            Validator[] memory _emptyReturn = new Validator[](1);
+        if (_validatorList.length == 1 || _vlIndex > _validatorList.length) {
+            Data.Validator[] memory _emptyReturn = new Data.Validator[](1);
             _emptyReturn[0] = emptyValidatorInfo;
             return (0, _emptyReturn);
         }
 
-        Validator[] memory _vlReturn = new Validator[](_resultsPerPage);
+        Data.Validator[] memory _vlReturn = new Data.Validator[](
+            _resultsPerPage
+        );
         uint256 _returnCounter = 0;
         for (_vlIndex; _vlIndex < _resultsPerPage * _page; _vlIndex++) {
-            if (_vlIndex < validatorList.length) {
-                _vlReturn[_returnCounter] = validatorList[_vlIndex];
+            if (_vlIndex < _validatorList.length) {
+                _vlReturn[_returnCounter] = _validatorList[_vlIndex];
             } else {
                 _vlReturn[_returnCounter] = emptyValidatorInfo;
             }
             _returnCounter++;
         }
-        return (validatorList.length - 1, _vlReturn);
+        return (_validatorList.length - 1, _vlReturn);
     }
 
     function getUserList(uint256 _page, uint256 _resultsPerPage)
         public
         view
-        returns (uint256, UserInfos[] memory)
+        returns (uint256, Data.SummaryOfUser[] memory)
     {
-        require(_resultsPerPage <= 20, "Maximum 20 User per Page");
+        require(_resultsPerPage <= 20, "Maximum 20 Users per Page");
         uint256 _ulIndex = _resultsPerPage * _page - _resultsPerPage + 1;
 
-        UserInfos memory emptyUserInfo = UserInfos(0, address(0), 0, 0, 0);
+        Data.SummaryOfUser memory emptyUserInfo = Data.SummaryOfUser(
+            0,
+            address(0),
+            0,
+            0,
+            0
+        );
 
-        if (userList.length == 1 || _ulIndex > userList.length) {
-            UserInfos[] memory _emptyReturn = new UserInfos[](1);
+        if (_userList.length == 1 || _ulIndex > _userList.length) {
+            Data.SummaryOfUser[] memory _emptyReturn = new Data.SummaryOfUser[](
+                1
+            );
             _emptyReturn[0] = emptyUserInfo;
             return (0, _emptyReturn);
         }
 
-        UserInfos[] memory _ulReturn = new UserInfos[](_resultsPerPage);
+        Data.SummaryOfUser[] memory _ulReturn = new Data.SummaryOfUser[](
+            _resultsPerPage
+        );
         uint256 _returnCounter = 0;
         for (_ulIndex; _ulIndex < _resultsPerPage * _page; _ulIndex++) {
-            if (_ulIndex < userList.length) {
-                _ulReturn[_returnCounter] = UserInfos(
+            if (_ulIndex < _userList.length) {
+                _ulReturn[_returnCounter] = Data.SummaryOfUser(
                     _ulIndex,
-                    userList[_ulIndex].user,
-                    userList[_ulIndex].totalRewards,
-                    _userBalance[userList[_ulIndex].user][BalanceTypes.LOCKED],
-                    _userBalance[userList[_ulIndex].user][BalanceTypes.UNLOCKED]
+                    _userList[_ulIndex].user,
+                    _userList[_ulIndex].totalRewards,
+                    _userBalance[_userList[_ulIndex].user][
+                        Data.BalanceTypes.LOCKED
+                    ],
+                    _userBalance[_userList[_ulIndex].user][
+                        Data.BalanceTypes.UNLOCKED
+                    ]
                 );
             } else {
                 _ulReturn[_returnCounter] = emptyUserInfo;
             }
             _returnCounter++;
         }
-        return (userList.length - 1, _ulReturn);
+        return (_userList.length - 1, _ulReturn);
     }
 
     // / Epoch Initalize --- maximumEpochForValidators+7 epoch
@@ -686,8 +631,8 @@ contract PoSSystem {
 
     function _epochInitalize(uint256 _epoch) internal {
         if (_epochList[_epoch].epoch == 0) {
-            _epochList[_epoch] = Epoch(_epoch, 0, 0, 0, 0);
-            selfstakeByValidatorAtEpoch[_epoch][0] = 0;
+            _epochList[_epoch] = Data.Epoch(_epoch, 0, 0, 0, 0);
+            selfStakesForEpoch[_epoch][0] = 0;
         }
     }
 
