@@ -15,6 +15,19 @@ contract ProofOfStake {
     // epoch -> ( validator_index -> user_vote)
     mapping(uint256 => mapping(uint256 => uint256)) public userVotesForEpoch;
 
+    // epoch -> ( siralama ->  validator index )
+    mapping(uint256 => mapping(uint256 => uint256)) public selectedValidators;
+
+    /**
+
+        Epoch   No      vIndex
+        1 =>    1   =   1
+                2   =   15
+                3   =   8
+                ..  =   ..
+                99  =   ..
+    */
+
     User[] private _userList;
     mapping(address => uint256) private _userIndex;
     mapping(address => mapping(BalanceTypes => uint256)) private _userBalance;
@@ -44,6 +57,7 @@ contract ProofOfStake {
     uint256 private constant _EPOCHFIRSTBLOCK = 100000;
     uint256 private constant _MAXIMUMEPOCHFORVOTES = 7; // 7 epoch
     uint256 private constant _MAXIMUMEPOCHFORVALIDATORS = 30; // 30 epoch
+    uint256 private constant _VOTINGPERSELFSTAKE = 100;
 
     uint256 private fakeNextEpoch = 0;
     uint256 public initilazedLastEpoch = 0;
@@ -57,19 +71,19 @@ contract ProofOfStake {
         epochInit();
     }
 
-    modifier notInBlacklist() {
+    modifier NotInBlacklist() {
         require(!_blacklistedAccount[msg.sender], "You are in the blacklist");
         _;
     }
 
     // Sadece oxo deposit yatırmış ve kaydı olanlar işlem yapabilir
-    modifier onlyStakers() {
+    modifier OnlyStakers() {
         require(_userIndex[msg.sender] > 0, "You are not staker!");
         _;
     }
 
     // coinbase adresinin sahibi işlem yapabilir
-    modifier CoinbaseOwner(address coinbase) {
+    modifier CoinbaseOwnerCheck(address coinbase) {
         require(
             coinbaseOwners[coinbase] == msg.sender,
             "You are not validator owner!"
@@ -264,7 +278,7 @@ contract ProofOfStake {
         uint256 increaseSelfStake
     )
         public
-        CoinbaseOwner(coinbase)
+        CoinbaseOwnerCheck(coinbase)
         UnlockedBalanceCheck(increaseSelfStake)
         returns (bool)
     {
@@ -352,7 +366,7 @@ contract ProofOfStake {
     // Validatörlüğe newFinalEpoch döneminde veda ediyor
     function resignCandidate(address coinbase, uint256 newFinalEpoch)
         public
-        CoinbaseOwner(coinbase)
+        CoinbaseOwnerCheck(coinbase)
         returns (bool)
     {
         // Sonraki dönem bilgisi
@@ -415,7 +429,7 @@ contract ProofOfStake {
     // Adaylıktan çekilmiş olan Validatör daha önceden kaydedilen hedef dönem geldiğinde kilitli bakiyesindeki parayı kilitsiz bakiyeye aktarabilir
     function unlockSelfStakeAfterResigned(address coinbase)
         public
-        CoinbaseOwner(coinbase)
+        CoinbaseOwnerCheck(coinbase)
         returns (bool)
     {
         // Validatör index bilgisini getir
@@ -453,7 +467,7 @@ contract ProofOfStake {
     // Adaylık dönemi bitmiş, kendisi adaylıktan çekilmemiş validatör için kilitli bakiyesini almasını sağlar (7 dönem sonra)
     function unlockSelfStakeAfterExpired(address coinbase)
         public
-        CoinbaseOwner(coinbase)
+        CoinbaseOwnerCheck(coinbase)
         returns (bool)
     {
         // Validatör index bilgisini getir
@@ -564,52 +578,55 @@ contract ProofOfStake {
         address coinbase,
         uint256 amount,
         uint256 maximumEpoch
-    ) public onlyStakers UnlockedBalanceCheck(amount) returns (bool) {
-        require(_validatorIndex[coinbase] != 0, "Wrong Validator??");
-        // require(
-        //     _userBalance[msg.sender][BalanceTypes.UNLOCKED] >= amount,
-        //     "Your unlocked balance is not enough"
-        // );
+    ) public OnlyStakers UnlockedBalanceCheck(amount) returns (bool) {
+        uint256 vIndex = _validatorIndex[coinbase];
+        // Validator var mı kontrolü
+        require(vIndex != 0, "Validator is not available");
 
-        uint256 maxEpoch = _MAXIMUMEPOCHFORVOTES;
+        // Validator bilgisi
+        Validator memory v = _validatorList[vIndex];
 
-        if (maximumEpoch == 0 || maximumEpoch > maxEpoch) {
-            maximumEpoch = maxEpoch;
+        // Validator resigned veya expired olmamalı
+        require(!v.expired, "Expired Validator");
+        require(!v.resigned, "Resigned Validator");
+
+        uint256 nextEpoch = _calculateNextEpoch();
+
+        uint256 votingPower = amount;
+
+        uint256 maxVotingPower = (selfStakesForEpoch[nextEpoch][vIndex] *
+            _VOTINGPERSELFSTAKE) - userVotesForEpoch[nextEpoch][vIndex];
+
+        if (amount > maxVotingPower) votingPower = maxVotingPower;
+
+        if (maximumEpoch == 0 || maximumEpoch > _MAXIMUMEPOCHFORVOTES) {
+            maximumEpoch = _MAXIMUMEPOCHFORVOTES;
         }
 
-        uint256 vIndex = _validatorIndex[coinbase];
-        Validator memory v = _validatorList[vIndex];
-        uint256 nextEpoch = _calculateNextEpoch();
-        if (nextEpoch + maximumEpoch - 1 > v.finalEpoch) {
+        if (nextEpoch - 1 + maximumEpoch > v.finalEpoch) {
             maximumEpoch = v.finalEpoch - nextEpoch;
         }
 
         uint256 index = _userIndex[msg.sender];
-        uint256 startEpoch = nextEpoch;
-        uint256 endEpoch = startEpoch + maximumEpoch;
+        uint256 endEpoch = nextEpoch - 1 + maximumEpoch;
 
         userVotes[index].user_votes.push(
             Vote({
                 user: msg.sender,
                 validator: coinbase,
-                startEpoch: startEpoch,
+                startEpoch: nextEpoch,
                 endEpoch: endEpoch,
                 active: true,
-                amount: amount
+                amount: votingPower
             })
         );
 
-        for (uint256 epoch = startEpoch; epoch <= endEpoch; epoch++) {
-            if (_epochList[epoch].epoch == 0) {
-                _epochInitalize(epoch);
-            }
-
+        for (uint256 epoch = nextEpoch; epoch <= endEpoch; epoch++) {
             _epochList[epoch].totalUserStakes = _epochList[epoch]
                 .totalUserStakes
-                .add(amount);
-
+                .add(votingPower);
             userVotesForEpoch[epoch][vIndex] = userVotesForEpoch[epoch][vIndex]
-                .add(amount);
+                .add(votingPower);
         }
 
         _lockMyBalance(amount);
