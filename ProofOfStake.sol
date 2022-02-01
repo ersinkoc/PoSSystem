@@ -87,6 +87,15 @@ contract ProofOfStake {
         _;
     }
 
+    // kilitsiz bakiyesi fonksiyon için yetersiz ise işleme devam etme
+    modifier UnlockedBalanceCheck(uint256 amount) {
+        require(
+            _userBalance[msg.sender][BalanceTypes.UNLOCKED] >= amount,
+            "Your unlocked balance is not enough"
+        );
+        _;
+    }
+
     /** ////////////////////////////////////////////////////////////////////////////////////////////////////////// */
     // Deneme süresinde kullanıcılara deposito yapmasalar bile bakiye eklemek için
     function putSomeMoney(address _who, uint256 _amount) public returns (bool) {
@@ -159,7 +168,7 @@ contract ProofOfStake {
         uint256 commission,
         string memory name,
         uint256 selfStake
-    ) public returns (uint256) {
+    ) public UnlockedBalanceCheck(selfStake) returns (uint256) {
         // Daha önce kayıtlı bir coinbase mi diye kontrol
         require(
             _validatorIndex[coinbase] == 0,
@@ -172,12 +181,12 @@ contract ProofOfStake {
             "Self-Stake is not an acceptable amount"
         );
 
-        // Kullanıcının selfstake yapacak kadar kilitsiz bakiyesi var mı?
-        require(
-            _userBalance[msg.sender][BalanceTypes.UNLOCKED] >=
-                _MINIMIMSELFSTAKE,
-            "You do not have enough unlocked balances for Self-Stake."
-        );
+        // // Kullanıcının selfstake yapacak kadar kilitsiz bakiyesi var mı?
+        // require(
+        //     _userBalance[msg.sender][BalanceTypes.UNLOCKED] >=
+        //         _MINIMIMSELFSTAKE,
+        //     "You do not have enough unlocked balances for Self-Stake."
+        // );
 
         // if (
         //     _userBalance[msg.sender][BalanceTypes.UNLOCKED] < _MINIMIMSELFSTAKE
@@ -253,7 +262,12 @@ contract ProofOfStake {
         address coinbase,
         uint256 newFinalEpoch,
         uint256 increaseSelfStake
-    ) public CoinbaseOwner(coinbase) returns (bool) {
+    )
+        public
+        CoinbaseOwner(coinbase)
+        UnlockedBalanceCheck(increaseSelfStake)
+        returns (bool)
+    {
         // validator index bilgisini getir
         uint256 vIndex = _getValidatorIndex(coinbase);
 
@@ -268,12 +282,12 @@ contract ProofOfStake {
 
         uint256 newSelfStake = selfStake;
 
-        // Eğer selfstake miktarı artırılacaksa bunun için yeterli kilitsiz bakiye var mı diye kontrol et
-        require(
-            _userBalance[msg.sender][BalanceTypes.UNLOCKED] >=
-                increaseSelfStake,
-            "You have to deposit for increase"
-        );
+        // // Eğer selfstake miktarı artırılacaksa bunun için yeterli kilitsiz bakiye var mı diye kontrol et
+        // require(
+        //     _userBalance[msg.sender][BalanceTypes.UNLOCKED] >=
+        //         increaseSelfStake,
+        //     "You have to deposit for increase"
+        // );
 
         // Validatörün kayıtlı adaylık bitiş dönemini al
         uint256 oldFinalEpoch = _validatorList[vIndex].finalEpoch;
@@ -399,7 +413,7 @@ contract ProofOfStake {
     }
 
     // Adaylıktan çekilmiş olan Validatör daha önceden kaydedilen hedef dönem geldiğinde kilitli bakiyesindeki parayı kilitsiz bakiyeye aktarabilir
-    function unlockSelfStake(address coinbase)
+    function unlockSelfStakeAfterResigned(address coinbase)
         public
         CoinbaseOwner(coinbase)
         returns (bool)
@@ -437,7 +451,7 @@ contract ProofOfStake {
     }
 
     // Adaylık dönemi bitmiş, kendisi adaylıktan çekilmemiş validatör için kilitli bakiyesini almasını sağlar (7 dönem sonra)
-    function unlockSelfStakeWhenExpired(address coinbase)
+    function unlockSelfStakeAfterExpired(address coinbase)
         public
         CoinbaseOwner(coinbase)
         returns (bool)
@@ -491,10 +505,21 @@ contract ProofOfStake {
         return _userBalance[msg.sender][BalanceTypes.LOCKED];
     }
 
-    function _getValidatorIndex(address who) internal view returns (uint256) {
-        return _validatorIndex[who];
+    // Validator kayıtlı ise index bilgisini getir (0-kayıtsız)
+    function _getValidatorIndex(address coinbase)
+        internal
+        view
+        returns (uint256)
+    {
+        return _validatorIndex[coinbase];
     }
 
+    // public version
+    function getValidatorIndex(address coinbase) public view returns (uint256) {
+        return _validatorIndex[coinbase];
+    }
+
+    // index ile validator adayı bilgisini getirir
     function getValidatorByIndex(uint256 index)
         public
         view
@@ -503,18 +528,13 @@ contract ProofOfStake {
         return _validatorList[index];
     }
 
-    function getValidatorIndex(address validator)
-        public
-        view
-        returns (uint256)
-    {
-        return _validatorIndex[validator];
-    }
-
+    /// TEST PURPOSE
     function addMeAsStackHolder() public returns (uint256) {
         uint256 r = _addStakeholder(msg.sender);
         return r;
     }
+
+    ///
 
     // / New User Record
     function _addStakeholder(address _user) internal returns (uint256) {
@@ -544,12 +564,12 @@ contract ProofOfStake {
         address coinbase,
         uint256 amount,
         uint256 maximumEpoch
-    ) public onlyStakers returns (bool) {
+    ) public onlyStakers UnlockedBalanceCheck(amount) returns (bool) {
         require(_validatorIndex[coinbase] != 0, "Wrong Validator??");
-        require(
-            _userBalance[msg.sender][BalanceTypes.UNLOCKED] >= amount,
-            "Your unlocked balance is not enough"
-        );
+        // require(
+        //     _userBalance[msg.sender][BalanceTypes.UNLOCKED] >= amount,
+        //     "Your unlocked balance is not enough"
+        // );
 
         uint256 maxEpoch = _MAXIMUMEPOCHFORVOTES;
 
