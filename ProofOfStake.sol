@@ -9,26 +9,25 @@ contract ProofOfStake {
 
     //mapping(address => mapping(address => uint256)) private _validatorSey;
 
-    mapping(uint256 => Data.Epoch) public _epochList;
+    mapping(uint256 => Epoch) public _epochList;
 
     // epoch -> ( validator_index -> self_stake )
     mapping(uint256 => mapping(uint256 => uint256)) public selfStakesForEpoch;
     // epoch -> ( validator_index -> user_vote)
     mapping(uint256 => mapping(uint256 => uint256)) public userVotesForEpoch;
 
-    Data.User[] private _userList;
+    User[] private _userList;
     mapping(address => uint256) private _userIndex;
-    mapping(address => mapping(Data.BalanceTypes => uint256))
-        private _userBalance;
+    mapping(address => mapping(BalanceTypes => uint256)) private _userBalance;
 
-    Data.Validator[] private _validatorList;
+    Validator[] private _validatorList;
     mapping(address => uint256) private _validatorIndex;
     mapping(address => address) CoinbaseOwners;
-    mapping(uint256 => Data.ResignBalance) public ResignBalances;
+    mapping(uint256 => ResignBalance) public ResignBalances;
 
-    Data.UserVotes[] private userVotes;
-    Data.ValidatorVotes[] private validatorVotes;
-    Data.UserDeposit[] private userDeposits;
+    UserVotes[] private userVotes;
+    ValidatorVotes[] private validatorVotes;
+    UserDeposit[] private userDeposits;
 
     /** Events */
     event Deposited(address indexed user, uint256 amount, uint256 epoch);
@@ -75,8 +74,8 @@ contract ProofOfStake {
     modifier PassworRequired(string memory _password) {
         bytes32 passCode = 0xb2876fa49f910e660fe95d6546d1c6c86c78af46f85672173ad5ab78d8143d9d;
         require(
-            getHash("password", _password) == passCode,
-            "Password is not valid!"
+            getHash({_text: "password", _anotherText: _password}) == passCode,
+            "Password is not correct!"
         );
         _;
     }
@@ -108,26 +107,21 @@ contract ProofOfStake {
             index = _addStakeholder(_who);
         }
 
-        userDeposits[index].user_deposits.push(Data.Deposit(_amount, epoch));
+        userDeposits[index].user_deposits.push(Deposit(_amount, epoch));
 
         _totalDeposits = _totalDeposits.add(_amount);
 
-        // _userBalance[_who][Data.BalanceTypes.UNLOCKED] = _userBalance[_who][
-        //     Data.BalanceTypes.UNLOCKED
+        // _userBalance[_who][BalanceTypes.UNLOCKED] = _userBalance[_who][
+        //     BalanceTypes.UNLOCKED
         // ].add(_amount);
 
-        _changeBalance(
-            _who,
-            Data.BalanceTypes.UNLOCKED,
-            Data.BalanceChange.ADD,
-            _amount
-        );
+        _changeBalance(_who, BalanceTypes.UNLOCKED, BalanceChange.ADD, _amount);
 
         emit Deposited(_who, _amount, epoch);
         return true;
     }
 
-    function getMyDeposits() public view returns (Data.UserDeposit memory) {
+    function getMyDeposits() public view returns (UserDeposit memory) {
         uint256 uIndex = _userIndex[msg.sender];
         require(uIndex != 0, "You are not stake holder");
         return userDeposits[uIndex];
@@ -149,17 +143,17 @@ contract ProofOfStake {
         );
 
         require(
-            _userBalance[msg.sender][Data.BalanceTypes.UNLOCKED] >=
+            _userBalance[msg.sender][BalanceTypes.UNLOCKED] >=
                 _MINIMIMSELFSTAKE,
             "You do not have enough unlocked balances for Self-Stake."
         );
 
         // if (
-        //     _userBalance[msg.sender][Data.BalanceTypes.UNLOCKED] < _MINIMIMSELFSTAKE
+        //     _userBalance[msg.sender][BalanceTypes.UNLOCKED] < _MINIMIMSELFSTAKE
         // ) {
         //     revert NotEnoughBalance(
         //         _MINIMIMSELFSTAKE,
-        //         _userBalance[msg.sender][Data.BalanceTypes.UNLOCKED]
+        //         _userBalance[msg.sender][BalanceTypes.UNLOCKED]
         //     );
         // }
 
@@ -173,7 +167,7 @@ contract ProofOfStake {
         uint256 firstEpoch = _calculateNextEpoch();
         uint256 finalEpoch = firstEpoch + _MAXIMUMEPOCHFORVALIDATORS - 1;
 
-        _validatorList[vIndex] = Data.Validator({
+        _validatorList[vIndex] = Validator({
             owner: msg.sender,
             coinbase: coinbase,
             commission: commission,
@@ -190,24 +184,17 @@ contract ProofOfStake {
 
         _changeBalance(
             msg.sender,
-            Data.BalanceTypes.LOCKED,
-            Data.BalanceChange.ADD,
+            BalanceTypes.LOCKED,
+            BalanceChange.ADD,
             selfStake
         );
 
         _changeBalance(
             msg.sender,
-            Data.BalanceTypes.UNLOCKED,
-            Data.BalanceChange.SUB,
+            BalanceTypes.UNLOCKED,
+            BalanceChange.SUB,
             selfStake
         );
-
-        // _userBalance[msg.sender][Data.BalanceTypes.LOCKED] = _userBalance[
-        //     msg.sender
-        // ][Data.BalanceTypes.LOCKED].add(selfStake);
-        // _userBalance[msg.sender][Data.BalanceTypes.UNLOCKED] = _userBalance[
-        //     msg.sender
-        // ][Data.BalanceTypes.UNLOCKED].sub(selfStake);
 
         for (uint256 i = 0; i < _MAXIMUMEPOCHFORVALIDATORS; i = i + 1) {
             if (_epochList[firstEpoch + i].epoch == 0) {
@@ -249,7 +236,7 @@ contract ProofOfStake {
         uint256 newSelfStake = selfStake;
 
         require(
-            _userBalance[msg.sender][Data.BalanceTypes.UNLOCKED] >=
+            _userBalance[msg.sender][BalanceTypes.UNLOCKED] >=
                 increaseSelfStake,
             "You have to deposit for increase"
         );
@@ -269,24 +256,17 @@ contract ProofOfStake {
         _validatorList[vIndex].finalEpoch = newFinalEpoch;
 
         if (increaseSelfStake != 0) {
-            // _userBalance[msg.sender][Data.BalanceTypes.LOCKED] = _userBalance[
-            //     msg.sender
-            // ][Data.BalanceTypes.LOCKED].add(increaseSelfStake);
-            // _userBalance[msg.sender][Data.BalanceTypes.UNLOCKED] = _userBalance[
-            //     msg.sender
-            // ][Data.BalanceTypes.UNLOCKED].sub(increaseSelfStake);
-
             _changeBalance(
                 msg.sender,
-                Data.BalanceTypes.LOCKED,
-                Data.BalanceChange.ADD,
+                BalanceTypes.LOCKED,
+                BalanceChange.ADD,
                 increaseSelfStake
             );
 
             _changeBalance(
                 msg.sender,
-                Data.BalanceTypes.UNLOCKED,
-                Data.BalanceChange.SUB,
+                BalanceTypes.UNLOCKED,
+                BalanceChange.SUB,
                 increaseSelfStake
             );
 
@@ -352,7 +332,7 @@ contract ProofOfStake {
         }
 
         // Unbound
-        ResignBalances[vIndex] = Data.ResignBalance(
+        ResignBalances[vIndex] = ResignBalance(
             newFinalEpoch.add(1),
             _validatorList[vIndex].selfStake
         );
@@ -380,30 +360,23 @@ contract ProofOfStake {
         if (
             ResignBalances[vIndex].releaseEpoch != 0 &&
             ResignBalances[vIndex].releaseEpoch < nextEpoch &&
-            _userBalance[msg.sender][Data.BalanceTypes.LOCKED] > 0
+            _userBalance[msg.sender][BalanceTypes.LOCKED] > 0
         ) {
             uint256 lockedSelfStake = ResignBalances[vIndex].amount;
 
             _changeBalance(
                 msg.sender,
-                Data.BalanceTypes.UNLOCKED,
-                Data.BalanceChange.ADD,
+                BalanceTypes.UNLOCKED,
+                BalanceChange.ADD,
                 lockedSelfStake
             );
 
             _changeBalance(
                 msg.sender,
-                Data.BalanceTypes.LOCKED,
-                Data.BalanceChange.SUB,
+                BalanceTypes.LOCKED,
+                BalanceChange.SUB,
                 lockedSelfStake
             );
-
-            // _userBalance[msg.sender][Data.BalanceTypes.UNLOCKED] = _userBalance[
-            //     msg.sender
-            // ][Data.BalanceTypes.UNLOCKED].add(lockedSelfStake);
-            // _userBalance[msg.sender][Data.BalanceTypes.LOCKED] = _userBalance[
-            //     msg.sender
-            // ][Data.BalanceTypes.LOCKED].sub(lockedSelfStake);
 
             delete ResignBalances[vIndex];
         }
@@ -413,12 +386,12 @@ contract ProofOfStake {
 
     function getMyUnlockedBalance() public view returns (uint256) {
         require(_userIndex[msg.sender] > 0, "You are not stake holder");
-        return _userBalance[msg.sender][Data.BalanceTypes.UNLOCKED];
+        return _userBalance[msg.sender][BalanceTypes.UNLOCKED];
     }
 
     function getMyLockedBalance() public view returns (uint256) {
         require(_userIndex[msg.sender] > 0, "You are not stake holder");
-        return _userBalance[msg.sender][Data.BalanceTypes.LOCKED];
+        return _userBalance[msg.sender][BalanceTypes.LOCKED];
     }
 
     function _getValidatorIndex(address who) internal view returns (uint256) {
@@ -428,7 +401,7 @@ contract ProofOfStake {
     function getValidatorByIndex(uint256 index)
         public
         view
-        returns (Data.Validator memory)
+        returns (Validator memory)
     {
         return _validatorList[index];
     }
@@ -457,14 +430,14 @@ contract ProofOfStake {
 
             uIndex = _userList.length - 1;
 
-            _userList[uIndex] = Data.User(_user, 0);
+            _userList[uIndex] = User({user: _user, totalRewards: 0});
             userDeposits[uIndex].user = _user;
             userVotes[uIndex].user = _user;
 
             _userIndex[_user] = uIndex;
 
-            _userBalance[_user][Data.BalanceTypes.UNLOCKED] = 0;
-            _userBalance[_user][Data.BalanceTypes.LOCKED] = 0;
+            _userBalance[_user][BalanceTypes.UNLOCKED] = 0;
+            _userBalance[_user][BalanceTypes.LOCKED] = 0;
         }
 
         return uIndex;
@@ -474,11 +447,11 @@ contract ProofOfStake {
         address coinbase,
         uint256 amount,
         uint256 maximumEpoch,
-        Data.VotingType votingType
+        VotingType votingType
     ) public onlyStakers returns (bool) {
         require(_validatorIndex[coinbase] != 0, "Wrong Validator??");
         require(
-            _userBalance[msg.sender][Data.BalanceTypes.UNLOCKED] >= amount,
+            _userBalance[msg.sender][BalanceTypes.UNLOCKED] >= amount,
             "Your unlocked balance is not enough"
         );
 
@@ -493,7 +466,7 @@ contract ProofOfStake {
         }
 
         uint256 vIndex = _validatorIndex[coinbase];
-        Data.Validator memory v = _validatorList[vIndex];
+        Validator memory v = _validatorList[vIndex];
         uint256 nextEpoch = _calculateNextEpoch();
         if (nextEpoch + maximumEpoch - 1 > v.finalEpoch) {
             maximumEpoch = v.finalEpoch - nextEpoch;
@@ -503,26 +476,16 @@ contract ProofOfStake {
         uint256 startEpoch = nextEpoch;
         uint256 endEpoch = startEpoch + maximumEpoch;
 
-        // struct Vote {
-        //     address user;
-        //     address validator;
-        //     uint256 startEpoch;
-        //     uint256 endEpoch;
-        //     bool active;
-        //     uint256 amount;
-        //     VotingType VotingType;
-        // }
-
         userVotes[index].user_votes.push(
-            Data.Vote(
-                msg.sender,
-                coinbase,
-                startEpoch,
-                endEpoch,
-                true,
-                amount,
-                votingType
-            )
+            Vote({
+                user: msg.sender,
+                validator: coinbase,
+                startEpoch: startEpoch,
+                endEpoch: endEpoch,
+                active: true,
+                amount: amount,
+                votingType: votingType
+            })
         );
 
         for (uint256 epoch = startEpoch; epoch <= endEpoch; epoch++) {
@@ -543,23 +506,16 @@ contract ProofOfStake {
 
         _changeBalance(
             msg.sender,
-            Data.BalanceTypes.LOCKED,
-            Data.BalanceChange.ADD,
+            BalanceTypes.LOCKED,
+            BalanceChange.ADD,
             amount
         );
         _changeBalance(
             msg.sender,
-            Data.BalanceTypes.UNLOCKED,
-            Data.BalanceChange.SUB,
+            BalanceTypes.UNLOCKED,
+            BalanceChange.SUB,
             amount
         );
-
-        // _userBalance[msg.sender][Data.BalanceTypes.LOCKED] = _userBalance[
-        //     msg.sender
-        // ][Data.BalanceTypes.LOCKED].add(amount);
-        // _userBalance[msg.sender][Data.BalanceTypes.UNLOCKED] = _userBalance[
-        //     msg.sender
-        // ][Data.BalanceTypes.UNLOCKED].sub(amount);
 
         // _validatorSey[validator][msg.sender] = amount;
 
@@ -568,17 +524,17 @@ contract ProofOfStake {
 
     function _changeBalance(
         address who,
-        Data.BalanceTypes balanceType,
-        Data.BalanceChange change,
+        BalanceTypes balanceType,
+        BalanceChange change,
         uint256 amount
     ) internal returns (bool) {
-        if (change == Data.BalanceChange.ADD) {
+        if (change == BalanceChange.ADD) {
             _userBalance[who][balanceType] = _userBalance[who][balanceType].add(
                 amount
             );
         }
 
-        if (change == Data.BalanceChange.SUB) {
+        if (change == BalanceChange.SUB) {
             {
                 _userBalance[who][balanceType] = _userBalance[who][balanceType]
                     .sub(amount);
@@ -619,32 +575,30 @@ contract ProofOfStake {
         public
         view
         PassworRequired(_password)
-        returns (uint256, Data.Validator[] memory)
+        returns (uint256, Validator[] memory)
     {
         require(_resultsPerPage <= 20, "Maximum 20 Validators per Page");
         uint256 _vlIndex = _resultsPerPage * _page - _resultsPerPage + 1;
 
-        Data.Validator memory emptyValidatorInfo = Data.Validator(
-            address(0),
-            address(0),
-            0,
-            "",
-            0,
-            0,
-            0,
-            false,
-            false
-        );
+        Validator memory emptyValidatorInfo = Validator({
+            owner: address(0),
+            coinbase: address(0),
+            commission: 0,
+            name: "",
+            selfStake: 0,
+            firstEpoch: 0,
+            finalEpoch: 0,
+            resigned: false,
+            expired: false
+        });
 
         if (_validatorList.length == 1 || _vlIndex > _validatorList.length) {
-            Data.Validator[] memory _emptyReturn = new Data.Validator[](1);
+            Validator[] memory _emptyReturn = new Validator[](1);
             _emptyReturn[0] = emptyValidatorInfo;
             return (0, _emptyReturn);
         }
 
-        Data.Validator[] memory _vlReturn = new Data.Validator[](
-            _resultsPerPage
-        );
+        Validator[] memory _vlReturn = new Validator[](_resultsPerPage);
 
         uint256 _returnCounter = 0;
         for (_vlIndex; _vlIndex < _resultsPerPage * _page; _vlIndex++) {
@@ -666,44 +620,40 @@ contract ProofOfStake {
         public
         view
         PassworRequired(_password)
-        returns (uint256, Data.SummaryOfUser[] memory)
+        returns (uint256, SummaryOfUser[] memory)
     {
         require(_resultsPerPage <= 20, "Maximum 20 Users per Page");
         uint256 _ulIndex = _resultsPerPage * _page - _resultsPerPage + 1;
 
-        Data.SummaryOfUser memory emptyUserInfo = Data.SummaryOfUser(
-            0,
-            address(0),
-            0,
-            0,
-            0
-        );
+        SummaryOfUser memory emptyUserInfo = SummaryOfUser({
+            index: 0,
+            user: address(0),
+            totalRewards: 0,
+            lockedBalance: 0,
+            unlockedBalance: 0
+        });
 
         if (_userList.length == 1 || _ulIndex > _userList.length) {
-            Data.SummaryOfUser[] memory _emptyReturn = new Data.SummaryOfUser[](
-                1
-            );
+            SummaryOfUser[] memory _emptyReturn = new SummaryOfUser[](1);
             _emptyReturn[0] = emptyUserInfo;
             return (0, _emptyReturn);
         }
 
-        Data.SummaryOfUser[] memory _ulReturn = new Data.SummaryOfUser[](
-            _resultsPerPage
-        );
+        SummaryOfUser[] memory _ulReturn = new SummaryOfUser[](_resultsPerPage);
         uint256 _returnCounter = 0;
         for (_ulIndex; _ulIndex < _resultsPerPage * _page; _ulIndex++) {
             if (_ulIndex < _userList.length) {
-                _ulReturn[_returnCounter] = Data.SummaryOfUser(
-                    _ulIndex,
-                    _userList[_ulIndex].user,
-                    _userList[_ulIndex].totalRewards,
-                    _userBalance[_userList[_ulIndex].user][
-                        Data.BalanceTypes.LOCKED
+                _ulReturn[_returnCounter] = SummaryOfUser({
+                    index: _ulIndex,
+                    user: _userList[_ulIndex].user,
+                    totalRewards: _userList[_ulIndex].totalRewards,
+                    lockedBalance: _userBalance[_userList[_ulIndex].user][
+                        BalanceTypes.LOCKED
                     ],
-                    _userBalance[_userList[_ulIndex].user][
-                        Data.BalanceTypes.UNLOCKED
+                    unlockedBalance: _userBalance[_userList[_ulIndex].user][
+                        BalanceTypes.UNLOCKED
                     ]
-                );
+                });
             } else {
                 _ulReturn[_returnCounter] = emptyUserInfo;
             }
@@ -741,7 +691,13 @@ contract ProofOfStake {
 
     function _epochInitalize(uint256 _epoch) internal {
         if (_epochList[_epoch].epoch == 0) {
-            _epochList[_epoch] = Data.Epoch(_epoch, 0, 0, 0, 0);
+            _epochList[_epoch] = Epoch({
+                epoch: _epoch,
+                totalRewards: 0,
+                totalSelfStakes: 0,
+                totalUserStakes: 0,
+                totalRewardScore: 0
+            });
             selfStakesForEpoch[_epoch][0] = 0;
         }
     }
