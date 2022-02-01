@@ -13,6 +13,7 @@ contract ProofOfStake {
 
     // epoch -> ( validator_index -> self_stake )
     mapping(uint256 => mapping(uint256 => uint256)) public selfStakesForEpoch;
+
     // epoch -> ( validator_index -> user_vote)
     mapping(uint256 => mapping(uint256 => uint256)) public userVotesForEpoch;
 
@@ -48,6 +49,7 @@ contract ProofOfStake {
     uint256 public initilazedLastEpoch = 0;
 
     error NotEnoughBalance(uint256 minimum, uint256 balance);
+    error Failed(string Failed);
 
     constructor() {
         _userList.push(); // 0-empty
@@ -58,11 +60,18 @@ contract ProofOfStake {
         epochInit();
     }
 
+    modifier notInBlacklist() {
+        require(!_blacklistedAccount[msg.sender], "You are in the blacklist");
+        _;
+    }
+
+    // Sadece oxo deposit yatırmış ve kaydı olanlar işlem yapabilir
     modifier onlyStakers() {
         require(_userIndex[msg.sender] > 0, "You are not staker!");
         _;
     }
 
+    // coinbase adresinin sahibi işlem yapabilir
     modifier CoinbaseOwner(address coinbase) {
         require(
             CoinbaseOwners[coinbase] == msg.sender,
@@ -71,6 +80,7 @@ contract ProofOfStake {
         _;
     }
 
+    // Parola gerektiren fonksiyonlar için :) Deneysel
     modifier PassworRequired(string memory _password) {
         bytes32 passCode = 0xb2876fa49f910e660fe95d6546d1c6c86c78af46f85672173ad5ab78d8143d9d;
         require(
@@ -81,6 +91,7 @@ contract ProofOfStake {
     }
 
     /** ////////////////////////////////////////////////////////////////////////////////////////////////////////// */
+    // Deneme süresinde kullanıcılara deposito yapmasalar bile bakiye eklemek için
     function putSomeMoney(address _who, uint256 _amount) public returns (bool) {
         return _depositMoney(_who, _amount);
     }
@@ -88,6 +99,7 @@ contract ProofOfStake {
     /** ////////////////////////////////////////////////////////////////////////////////////////////////////////// */
 
     /** Deposit */
+    // OXO yatırma
     receive() external payable {
         require(msg.value > 0, "Ho ho ho!");
 
@@ -96,52 +108,74 @@ contract ProofOfStake {
     }
 
     /** Deposit Money */
+    // OXO yattığında (veya sahtesinde) kullanıcıya bakiye ekleme
     function _depositMoney(address _who, uint256 _amount)
         internal
         returns (bool)
     {
+        // Sonraki dönem bilgisi
         uint256 epoch = _calculateNextEpoch();
+
+        // Kullanıcı index bilgisini getir
         uint256 index = _userIndex[_who];
 
+        // Eğer kayıtlı kullanıcı değilse kaydet
         if (index == 0) {
             index = _addStakeholder(_who);
         }
 
+        // Kullanıcı para yatırma işlemlerine kaydı ekle
         userDeposits[index].user_deposits.push(Deposit(_amount, epoch));
 
+        // Sisteme yatırılan paraları artır
         _totalDeposits = _totalDeposits.add(_amount);
 
         // _userBalance[_who][BalanceTypes.UNLOCKED] = _userBalance[_who][
         //     BalanceTypes.UNLOCKED
         // ].add(_amount);
 
+        // Kullanıcı kilitsiz para miktarını artır
         _changeBalance(_who, BalanceTypes.UNLOCKED, BalanceChange.ADD, _amount);
 
+        // Deposited eventini tetikle
         emit Deposited(_who, _amount, epoch);
         return true;
     }
 
-    function getMyDeposits() public view returns (UserDeposit memory) {
-        uint256 uIndex = _userIndex[msg.sender];
+    // Kullanıcının yatırdığı para kaydını görür
+    function getUserDeposits(address who)
+        public
+        view
+        returns (UserDeposit memory)
+    {
+        // kullanıcı index bilgisini getir
+        uint256 uIndex = _userIndex[who];
+        // Kullanıcı kayıtlı değilse işlemi durdur
         require(uIndex != 0, "You are not stake holder");
+        // Kullanıcı deposits dizisini dön
         return userDeposits[uIndex];
     }
 
+    // Validatör adaylık kaydı (coinbase = node imzalama adresi, commission = oy verenlerin gelirinden alacağı pay ..)
     function registerValidator(
         address coinbase,
         uint256 commission,
         string memory name,
         uint256 selfStake
     ) public returns (uint256) {
+        // Daha önce kayıtlı bir coinbase mi diye kontrol
         require(
             _validatorIndex[coinbase] == 0,
             "This validator address is already registered!"
         );
+
+        // SelfStake nin mininmum selfstake ve üstü olmasını kontrol
         require(
             selfStake >= _MINIMIMSELFSTAKE,
             "Self-Stake is not an acceptable amount"
         );
 
+        // Kullanıcının selfstake yapacak kadar kilitsiz bakiyesi var mı?
         require(
             _userBalance[msg.sender][BalanceTypes.UNLOCKED] >=
                 _MINIMIMSELFSTAKE,
@@ -157,16 +191,19 @@ contract ProofOfStake {
         //     );
         // }
 
+        // Validator listesine 1 kayıt ekle
         _validatorList.push();
+
+        // Son eklenen kaydın index bilgisini al
         uint256 vIndex = _validatorList.length - 1;
 
-        if (vIndex == 0) {
-            revert("Aooo");
-        }
-
+        // Bir sonraki dönemi getir
         uint256 firstEpoch = _calculateNextEpoch();
+
+        // Adaylık bitiş tarihini hesapla
         uint256 finalEpoch = firstEpoch + _MAXIMUMEPOCHFORVALIDATORS - 1;
 
+        // Validator kaydını index numarasına göre kaydet
         _validatorList[vIndex] = Validator({
             owner: msg.sender,
             coinbase: coinbase,
@@ -179,9 +216,13 @@ contract ProofOfStake {
             expired: false
         });
 
+        // index verisini coinbase adresi ile erişilebilir şekilde kaydet
         _validatorIndex[coinbase] = vIndex;
+
+        // Sahiplik verisini kaydet
         CoinbaseOwners[coinbase] = msg.sender;
 
+        // selfstake miktarını kilitli bakiyeye ekle
         _changeBalance(
             msg.sender,
             BalanceTypes.LOCKED,
@@ -189,6 +230,7 @@ contract ProofOfStake {
             selfStake
         );
 
+        // selfstake miktarını kilitsiz bakiyeden çıkar
         _changeBalance(
             msg.sender,
             BalanceTypes.UNLOCKED,
@@ -196,13 +238,19 @@ contract ProofOfStake {
             selfStake
         );
 
+        // Adaylık süresi için dönem bilgilerini güncelle
         for (uint256 i = 0; i < _MAXIMUMEPOCHFORVALIDATORS; i = i + 1) {
+            // Dönem başlık bilgisi hiç yoksa dönem bilgisi üret
             if (_epochList[firstEpoch + i].epoch == 0) {
                 _epochInitalize(firstEpoch + i);
             }
+
+            // Dönem üst bilgisindeki toplam selfstake miktarını artır
             _epochList[firstEpoch + i].totalSelfStakes = _epochList[
                 firstEpoch + i
             ].totalSelfStakes.add(selfStake);
+
+            // Dönem-> (ValidatorIndex->SelfStake) bilgisini kaydet
             selfStakesForEpoch[firstEpoch + i][vIndex] = selfStake;
         }
 
@@ -216,45 +264,54 @@ contract ProofOfStake {
         return vIndex;
     }
 
-    // Validator can extend itself candidate period
-    function extendCandidate(
+    // Validatör adaylık süresi uzatılabilir, aynı zamanda selfstake miktarı da artırılabilir
+    function extendValidatorEpochs(
         address coinbase,
         uint256 newFinalEpoch,
         uint256 increaseSelfStake
     ) public CoinbaseOwner(coinbase) returns (bool) {
+        // validator index bilgisini getir
         uint256 vIndex = _getValidatorIndex(coinbase);
 
+        // Eğer bu validator kaydı geri çekilmişse hata ver
         require(!_validatorList[vIndex].resigned, "You are resigned");
+
+        // Eğer bu validator kaydı geçmişte kalmışsa hata ver
         require(!_validatorList[vIndex].expired, "You are expired");
 
-        // require(ResignBalances[vIndex].epoch == 0, "You are resigned");
-
-        if (_validatorList[vIndex].owner != msg.sender) {
-            revert("You are not owner of that validator");
-        }
+        // Mevcut selfstake miktarını al
         uint256 selfStake = _validatorList[vIndex].selfStake;
+
         uint256 newSelfStake = selfStake;
 
+        // Eğer selfstake miktarı artırılacaksa bunun için yeterli kilitsiz bakiye var mı diye kontrol et
         require(
             _userBalance[msg.sender][BalanceTypes.UNLOCKED] >=
                 increaseSelfStake,
             "You have to deposit for increase"
         );
 
+        // Validatörün kayıtlı adaylık bitiş dönemini al
         uint256 oldFinalEpoch = _validatorList[vIndex].finalEpoch;
+
+        // Gelecek dönem bilgisini al
         uint256 nextEpoch = _calculateNextEpoch();
 
+        // Eğer validatör adaylık bitiş süresini geçirmişse hata ver
         require(
             oldFinalEpoch >= nextEpoch,
             "You can not extend that coinbase, it is expired"
         );
 
+        // Uzatılacak dönem maximum aday olunabilir dönem sayısını geçiyorsa bunu olabilecek en geç dönem ile değiştir
         if (newFinalEpoch - nextEpoch > _MAXIMUMEPOCHFORVALIDATORS) {
             newFinalEpoch = nextEpoch + _MAXIMUMEPOCHFORVALIDATORS - 1;
         }
 
+        // Validatör bilgisinde yeni adaylık bitiş dönemini kaydet
         _validatorList[vIndex].finalEpoch = newFinalEpoch;
 
+        // Eğer selfstake miktarı artırılıyorsa kilitsiz bakiyeden ilgili miktarı kilitli bakiyeye ekle
         if (increaseSelfStake != 0) {
             _changeBalance(
                 msg.sender,
@@ -270,10 +327,12 @@ contract ProofOfStake {
                 increaseSelfStake
             );
 
+            // Yeni selfstake miktarını eksiyle topla ve validatör kaydını değiştir
             newSelfStake = selfStake.add(increaseSelfStake);
             _validatorList[vIndex].selfStake = newSelfStake;
         }
 
+        // Gelecek dönem ve adaylık biteceği yeni dönem arasında döngüye gir
         for (
             uint256 epoch = nextEpoch;
             epoch <= newFinalEpoch;
@@ -283,14 +342,17 @@ contract ProofOfStake {
             //     _epochInitalize(epoch);
             // }
 
+            // Validatörün ilgili dönemdeki selfstake miktarını kaydet (eskisini güncele veya yeni ekle)
             selfStakesForEpoch[epoch][vIndex] = newSelfStake;
 
+            // Zaten aday olduğu dönenmlerde totalSelfStakes e artırılan rakamını ilave et
             if (epoch <= oldFinalEpoch && increaseSelfStake > 0) {
                 _epochList[epoch].totalSelfStakes = _epochList[epoch]
                     .totalSelfStakes
                     .add(increaseSelfStake);
             }
 
+            // Daha önceden aday olmadığı dönemler için toplam selfstake miktarını kaydet
             if (epoch > oldFinalEpoch) {
                 _epochList[epoch].totalSelfStakes = _epochList[epoch]
                     .totalSelfStakes
@@ -301,67 +363,95 @@ contract ProofOfStake {
         return true;
     }
 
+    // Validatörlüğe newFinalEpoch döneminde veda ediyor
     function resignCandidate(address coinbase, uint256 newFinalEpoch)
         public
         CoinbaseOwner(coinbase)
         returns (bool)
     {
-        uint256 nextEpoch = _calculateNextEpoch(); // next epoch
+        // Sonraki dönem bilgisi
+        uint256 nextEpoch = _calculateNextEpoch();
+
+        // Sonraki 7 dönem geçtiğinde ayrılabilir. Daha erken ayrılamaz.
         require(
-            newFinalEpoch < nextEpoch + 7,
+            newFinalEpoch >= nextEpoch + 7,
             "You can not resign before next 7 epochs"
         );
 
+        // Validator sırasını Getir
         uint256 vIndex = _getValidatorIndex(coinbase);
+
+        // Zaten ayrılmış :)
         require(
             ResignBalances[vIndex].releaseEpoch == 0,
             "You already resigned"
         );
 
+        //  Validatörün zaten kayıtlı son adaylık bitiş dönemini oku
         uint256 oldFinalEpoch = _validatorList[vIndex].finalEpoch;
+
+        // adaylık bitiş döneminden daha sonraki bir dönem ayrılmak istiyorsa (salaksa)
         if (newFinalEpoch > oldFinalEpoch) {
-            revert("You dont need to resign");
+            revert Failed("You dont need to resign");
         }
+
+        // Validatorün adaylık bitiş dönemini değiştir
         _validatorList[vIndex].finalEpoch = newFinalEpoch;
+
+        // Yeni bitiş döneminden bir dönem sonra eski bitiş dönemine kadar selfstake kayıtlarını sil/çıkar
         for (
             uint256 epoch = oldFinalEpoch + 1;
             epoch <= newFinalEpoch;
-            epoch = epoch + 1
+            epoch++
         ) {
+            // selfstake kaydını al
+            uint256 selfStake = selfStakesForEpoch[epoch][vIndex];
+            // dönem bilgisinden totalSelfStakes i azalt
+            _epochList[epoch].totalSelfStakes = _epochList[epoch]
+                .totalSelfStakes
+                .sub(selfStake);
+            // selfstake kaydını sil
             delete selfStakesForEpoch[epoch][vIndex];
         }
 
-        // Unbound
+        // yeni adaylık bitiş döneminden 1 dönem sonra sonra parasını alsın kaydı
         ResignBalances[vIndex] = ResignBalance(
             newFinalEpoch.add(1),
             _validatorList[vIndex].selfStake
         );
 
+        // Validator bilgisi resigned olarak işaretle
         _validatorList[vIndex].resigned = true;
 
         return true;
     }
 
+    // Adaylıktan çekilmiş olan Validatör daha önceden kaydedilen hedef dönem geldiğinde kilitli bakiyesindeki parayı kilitsiz bakiyeye aktarabilir
     function unlockSelfStake(address coinbase)
         public
         CoinbaseOwner(coinbase)
         returns (bool)
     {
+        // Validatör index bilgisini getir
         uint256 vIndex = _getValidatorIndex(coinbase);
 
         // if (_validatorList[vIndex].owner != msg.sender) {
         //     revert("You are not owner of that validator");
         // }
 
+        // Bu validatör adaylıktan mı çekilmiş?
         require(_validatorList[vIndex].resigned, "You are not resigned");
 
+        // Bir sonraki dönem bilgisini getir
         uint256 nextEpoch = _calculateNextEpoch(); // next epoch
 
+        // Eğer ilgili kayıt varsa ve hedef serbest bırakma zamanı gelecek dönemden önce ise ve kilitli bakiyesi de varsa :)
         if (
             ResignBalances[vIndex].releaseEpoch != 0 &&
             ResignBalances[vIndex].releaseEpoch < nextEpoch &&
             _userBalance[msg.sender][BalanceTypes.LOCKED] > 0
         ) {
+            // adaylıktan çekilirken ileride çözülmesi için kaydedilen bakiye miktarını al ve kilitli bakiyeden çıkarıp kilitsiz bakiyeye aktar
             uint256 lockedSelfStake = ResignBalances[vIndex].amount;
 
             _changeBalance(
@@ -378,8 +468,65 @@ contract ProofOfStake {
                 lockedSelfStake
             );
 
+            // bu adaylıktan çekilmeye ait self-stake serbest bırakma kaydını sil
             delete ResignBalances[vIndex];
         }
+
+        return true;
+    }
+
+    // Adaylık dönemi bitmiş, kendisi adaylıktan çekilmemiş validatör için kilitli bakiyesini almasını sağlar (7 dönem sonra)
+    function unlockSelfStakeWhenExpired(address coinbase)
+        public
+        CoinbaseOwner(coinbase)
+        returns (bool)
+    {
+        // Validatör index bilgisini getir
+        uint256 vIndex = _getValidatorIndex(coinbase);
+
+        // Bu validatör bu şekilde kilitli bakyesini  geri almış mı?
+        require(
+            !_validatorList[vIndex].expired,
+            "You already take your locked selfstake"
+        );
+
+        // Bir sonraki dönem bilgisini getir
+        uint256 nextEpoch = _calculateNextEpoch(); // next epoch
+
+        // Adaylık bitiş tarihi gelecek dönem veya sonrasını gösteriyorsa expired olmamıştır
+        if (_validatorList[vIndex].finalEpoch >= nextEpoch) {
+            revert Failed("You are not expired");
+        }
+
+        // Eğer validator adaylık süresi bitiminden 7 gün geçmemişse hata dön
+        if (_validatorList[vIndex].finalEpoch + 7 < nextEpoch) {
+            revert Failed("You have to wait 7 epoch after expired");
+        }
+
+        // İmkansız ama kullanıcı kilitli bakiyesi ile bu validatör kaydı için kilitlediği selfstakeden azsa hata dön
+        if (
+            _userBalance[msg.sender][BalanceTypes.LOCKED] <
+            _validatorList[vIndex].selfStake
+        ) {
+            revert Failed("Houston! We have a problem");
+        }
+
+        // validatör expired kaydının true olarak değiştir
+        _validatorList[vIndex].expired = true;
+
+        // kilitli bakiyedeki validatörün son selfstake miktarını kilitsiz bakiyeye taşı
+        _changeBalance(
+            msg.sender,
+            BalanceTypes.LOCKED,
+            BalanceChange.SUB,
+            _validatorList[vIndex].selfStake
+        );
+        _changeBalance(
+            msg.sender,
+            BalanceTypes.UNLOCKED,
+            BalanceChange.ADD,
+            _validatorList[vIndex].selfStake
+        );
 
         return true;
     }
@@ -575,7 +722,7 @@ contract ProofOfStake {
         public
         view
         PassworRequired(_password)
-        returns (uint256, Validator[] memory)
+        returns (uint256 count, Validator[] memory validators)
     {
         require(_resultsPerPage <= 20, "Maximum 20 Validators per Page");
         uint256 _vlIndex = _resultsPerPage * _page - _resultsPerPage + 1;
@@ -609,7 +756,7 @@ contract ProofOfStake {
             }
             _returnCounter++;
         }
-        return (_validatorList.length - 1, _vlReturn);
+        return (count = _validatorList.length - 1, validators = _vlReturn);
     }
 
     function getUserList(
@@ -620,7 +767,7 @@ contract ProofOfStake {
         public
         view
         PassworRequired(_password)
-        returns (uint256, SummaryOfUser[] memory)
+        returns (uint256 count, SummaryOfUser[] memory list)
     {
         require(_resultsPerPage <= 20, "Maximum 20 Users per Page");
         uint256 _ulIndex = _resultsPerPage * _page - _resultsPerPage + 1;
@@ -659,7 +806,7 @@ contract ProofOfStake {
             }
             _returnCounter++;
         }
-        return (_userList.length - 1, _ulReturn);
+        return (count = _userList.length - 1, list = _ulReturn);
     }
 
     // / Epoch Initalize --- _MAXIMUMEPOCHFORVALIDATORS+7 epoch
