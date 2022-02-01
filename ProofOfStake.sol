@@ -4,7 +4,7 @@ pragma solidity ^0.8.0;
 import {SafeMath} from "./SafeMath.sol";
 import {Data} from "./Data.sol";
 
-contract PoSSystem {
+contract ProofOfStake {
     using SafeMath for uint256;
     mapping(address => mapping(address => uint256)) private _validatorSey;
     mapping(uint256 => Data.Epoch) public _epochList;
