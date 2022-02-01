@@ -222,20 +222,6 @@ contract ProofOfStake {
         // selfstake miktarını kilitle
         _lockMyBalance(selfStake);
 
-        // _changeBalance(
-        //     msg.sender,
-        //     BalanceTypes.LOCKED,
-        //     BalanceChange.ADD,
-        //     selfStake
-        // );
-
-        // _changeBalance(
-        //     msg.sender,
-        //     BalanceTypes.UNLOCKED,
-        //     BalanceChange.SUB,
-        //     selfStake
-        // );
-
         // Adaylık süresi için dönem bilgilerini güncelle
         for (uint256 i = 0; i < _MAXIMUMEPOCHFORVALIDATORS; i = i + 1) {
             // Dönem başlık bilgisi hiç yoksa dönem bilgisi üret
@@ -312,19 +298,6 @@ contract ProofOfStake {
         // Eğer selfstake miktarı artırılıyorsa kilitsiz bakiyeden ilgili miktarı kilitli bakiyeye ekle
         if (increaseSelfStake != 0) {
             _lockMyBalance(increaseSelfStake);
-            // _changeBalance(
-            //     msg.sender,
-            //     BalanceTypes.LOCKED,
-            //     BalanceChange.ADD,
-            //     increaseSelfStake
-            // );
-
-            // _changeBalance(
-            //     msg.sender,
-            //     BalanceTypes.UNLOCKED,
-            //     BalanceChange.SUB,
-            //     increaseSelfStake
-            // );
 
             // Yeni selfstake miktarını eksiyle topla ve validatör kaydını değiştir
             newSelfStake = selfStake.add(increaseSelfStake);
@@ -453,21 +426,8 @@ contract ProofOfStake {
             // adaylıktan çekilirken ileride çözülmesi için kaydedilen bakiye miktarını al ve kilitli bakiyeden çıkarıp kilitsiz bakiyeye aktar
             uint256 lockedSelfStake = resignBalances[vIndex].amount;
 
-            _lockMyBalance(lockedSelfStake);
-
-            // _changeBalance(
-            //     msg.sender,
-            //     BalanceTypes.UNLOCKED,
-            //     BalanceChange.ADD,
-            //     lockedSelfStake
-            // );
-
-            // _changeBalance(
-            //     msg.sender,
-            //     BalanceTypes.LOCKED,
-            //     BalanceChange.SUB,
-            //     lockedSelfStake
-            // );
+            // kilitli rakamı kilitsiz bakiyeye aktar
+            _unLockMyBalance(lockedSelfStake);
 
             // bu adaylıktan çekilmeye ait self-stake serbest bırakma kaydını sil
             delete resignBalances[vIndex];
@@ -517,19 +477,6 @@ contract ProofOfStake {
 
         // kilitli bakiyedeki validatörün son selfstake miktarını kilitsiz bakiyeye taşı
         _unLockMyBalance(_validatorList[vIndex].selfStake);
-
-        // _changeBalance(
-        //     msg.sender,
-        //     BalanceTypes.LOCKED,
-        //     BalanceChange.SUB,
-        //     _validatorList[vIndex].selfStake
-        // );
-        // _changeBalance(
-        //     msg.sender,
-        //     BalanceTypes.UNLOCKED,
-        //     BalanceChange.ADD,
-        //     _validatorList[vIndex].selfStake
-        // );
 
         return true;
     }
@@ -596,8 +543,7 @@ contract ProofOfStake {
     function setVote(
         address coinbase,
         uint256 amount,
-        uint256 maximumEpoch,
-        VotingType votingType
+        uint256 maximumEpoch
     ) public onlyStakers returns (bool) {
         require(_validatorIndex[coinbase] != 0, "Wrong Validator??");
         require(
@@ -606,10 +552,6 @@ contract ProofOfStake {
         );
 
         uint256 maxEpoch = _MAXIMUMEPOCHFORVOTES;
-
-        // if (VotingType == VotingType.SELFSTAKE) {
-        //     maxEpoch = _MAXIMUMEPOCHFORVALIDATORS;
-        // }
 
         if (maximumEpoch == 0 || maximumEpoch > maxEpoch) {
             maximumEpoch = maxEpoch;
@@ -633,8 +575,7 @@ contract ProofOfStake {
                 startEpoch: startEpoch,
                 endEpoch: endEpoch,
                 active: true,
-                amount: amount,
-                votingType: votingType
+                amount: amount
             })
         );
 
@@ -642,34 +583,16 @@ contract ProofOfStake {
             if (_epochList[epoch].epoch == 0) {
                 _epochInitalize(epoch);
             }
-            // if (VotingType == VotingType.SELFSTAKE) {
-            //     _epochList[i].totalSelfStakes.add(amount);
-            // } else {
+
             _epochList[epoch].totalUserStakes = _epochList[epoch]
                 .totalUserStakes
                 .add(amount);
-            // }
 
             userVotesForEpoch[epoch][vIndex] = userVotesForEpoch[epoch][vIndex]
                 .add(amount);
         }
 
         _lockMyBalance(amount);
-
-        // _changeBalance(
-        //     msg.sender,
-        //     BalanceTypes.LOCKED,
-        //     BalanceChange.ADD,
-        //     amount
-        // );
-        // _changeBalance(
-        //     msg.sender,
-        //     BalanceTypes.UNLOCKED,
-        //     BalanceChange.SUB,
-        //     amount
-        // );
-
-        // _validatorSey[validator][msg.sender] = amount;
 
         return true;
     }
@@ -894,23 +817,12 @@ contract ProofOfStake {
         }
     }
 
-    // function getVote(address validator) public view returns (uint256) {
-    //     return _validatorSey[validator][msg.sender];
-    // }
-
-    // function removeVote(address validator) public returns (bool) {
-    //     delete _validatorSey[validator][msg.sender];
-    //     return true;
-    // }
-
     /** ------------------------------------------------------------------------------------------- */
     function getHash(string memory _text, string memory _anotherText)
         public
         pure
         returns (bytes32)
     {
-        // encodePacked(AAA, BBB) -> AAABBB
-        // encodePacked(AA, ABBB) -> AAABBB
         return keccak256(abi.encodePacked(_text, _anotherText));
     }
     /** ------------------------------------------------------------------------------------------- */
