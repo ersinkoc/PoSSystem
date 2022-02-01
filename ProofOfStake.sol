@@ -1,13 +1,11 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.0;
+pragma solidity >=0.8.7;
 
 import {SafeMath} from "./SafeMath.sol";
 import "./Data.sol";
 
 contract ProofOfStake {
     using SafeMath for uint256;
-
-    //mapping(address => mapping(address => uint256)) private _validatorSey;
 
     mapping(uint256 => Epoch) public _epochList;
 
@@ -23,8 +21,8 @@ contract ProofOfStake {
 
     Validator[] private _validatorList;
     mapping(address => uint256) private _validatorIndex;
-    mapping(address => address) CoinbaseOwners;
-    mapping(uint256 => ResignBalance) public ResignBalances;
+    mapping(address => address) private coinbaseOwners;
+    mapping(uint256 => ResignBalance) public resignBalances;
 
     UserVotes[] private userVotes;
     ValidatorVotes[] private validatorVotes;
@@ -32,6 +30,8 @@ contract ProofOfStake {
 
     /** Events */
     event Deposited(address indexed user, uint256 amount, uint256 epoch);
+    event DotEnoughBalance(uint256 minimum, uint256 balance);
+    event FailedEvent(string failText);
 
     mapping(address => bool) private _blacklistedAccount;
 
@@ -42,14 +42,11 @@ contract ProofOfStake {
     uint256 private constant _EPOCHTIME = (24 * 60 * 60) / _BLOCKTIME;
     uint256 private constant _VOTINGTIME = (23 * 60 * 60) / _BLOCKTIME;
     uint256 private constant _EPOCHFIRSTBLOCK = 100000;
-    uint256 private constant _MAXIMUMEPOCHFORVOTES = 15; // 15 epoch
+    uint256 private constant _MAXIMUMEPOCHFORVOTES = 7; // 7 epoch
     uint256 private constant _MAXIMUMEPOCHFORVALIDATORS = 30; // 30 epoch
 
     uint256 private fakeNextEpoch = 0;
     uint256 public initilazedLastEpoch = 0;
-
-    error NotEnoughBalance(uint256 minimum, uint256 balance);
-    error Failed(string Failed);
 
     constructor() {
         _userList.push(); // 0-empty
@@ -74,7 +71,7 @@ contract ProofOfStake {
     // coinbase adresinin sahibi işlem yapabilir
     modifier CoinbaseOwner(address coinbase) {
         require(
-            CoinbaseOwners[coinbase] == msg.sender,
+            coinbaseOwners[coinbase] == msg.sender,
             "You are not validator owner!"
         );
         _;
@@ -220,23 +217,24 @@ contract ProofOfStake {
         _validatorIndex[coinbase] = vIndex;
 
         // Sahiplik verisini kaydet
-        CoinbaseOwners[coinbase] = msg.sender;
+        coinbaseOwners[coinbase] = msg.sender;
 
-        // selfstake miktarını kilitli bakiyeye ekle
-        _changeBalance(
-            msg.sender,
-            BalanceTypes.LOCKED,
-            BalanceChange.ADD,
-            selfStake
-        );
+        // selfstake miktarını kilitle
+        _lockMyBalance(selfStake);
 
-        // selfstake miktarını kilitsiz bakiyeden çıkar
-        _changeBalance(
-            msg.sender,
-            BalanceTypes.UNLOCKED,
-            BalanceChange.SUB,
-            selfStake
-        );
+        // _changeBalance(
+        //     msg.sender,
+        //     BalanceTypes.LOCKED,
+        //     BalanceChange.ADD,
+        //     selfStake
+        // );
+
+        // _changeBalance(
+        //     msg.sender,
+        //     BalanceTypes.UNLOCKED,
+        //     BalanceChange.SUB,
+        //     selfStake
+        // );
 
         // Adaylık süresi için dönem bilgilerini güncelle
         for (uint256 i = 0; i < _MAXIMUMEPOCHFORVALIDATORS; i = i + 1) {
@@ -264,7 +262,7 @@ contract ProofOfStake {
         return vIndex;
     }
 
-    // Validatör adaylık süresi uzatılabilir, aynı zamanda selfstake miktarı da artırılabilir
+    // Validatör adaylık bitiş süresi değiştirebilir, aynı zamanda selfstake miktarı da artırılabilir
     function extendValidatorEpochs(
         address coinbase,
         uint256 newFinalEpoch,
@@ -313,19 +311,20 @@ contract ProofOfStake {
 
         // Eğer selfstake miktarı artırılıyorsa kilitsiz bakiyeden ilgili miktarı kilitli bakiyeye ekle
         if (increaseSelfStake != 0) {
-            _changeBalance(
-                msg.sender,
-                BalanceTypes.LOCKED,
-                BalanceChange.ADD,
-                increaseSelfStake
-            );
+            _lockMyBalance(increaseSelfStake);
+            // _changeBalance(
+            //     msg.sender,
+            //     BalanceTypes.LOCKED,
+            //     BalanceChange.ADD,
+            //     increaseSelfStake
+            // );
 
-            _changeBalance(
-                msg.sender,
-                BalanceTypes.UNLOCKED,
-                BalanceChange.SUB,
-                increaseSelfStake
-            );
+            // _changeBalance(
+            //     msg.sender,
+            //     BalanceTypes.UNLOCKED,
+            //     BalanceChange.SUB,
+            //     increaseSelfStake
+            // );
 
             // Yeni selfstake miktarını eksiyle topla ve validatör kaydını değiştir
             newSelfStake = selfStake.add(increaseSelfStake);
@@ -383,7 +382,7 @@ contract ProofOfStake {
 
         // Zaten ayrılmış :)
         require(
-            ResignBalances[vIndex].releaseEpoch == 0,
+            resignBalances[vIndex].releaseEpoch == 0,
             "You already resigned"
         );
 
@@ -392,7 +391,7 @@ contract ProofOfStake {
 
         // adaylık bitiş döneminden daha sonraki bir dönem ayrılmak istiyorsa (salaksa)
         if (newFinalEpoch > oldFinalEpoch) {
-            revert Failed("You dont need to resign");
+            revert("You dont need to resign");
         }
 
         // Validatorün adaylık bitiş dönemini değiştir
@@ -415,7 +414,7 @@ contract ProofOfStake {
         }
 
         // yeni adaylık bitiş döneminden 1 dönem sonra sonra parasını alsın kaydı
-        ResignBalances[vIndex] = ResignBalance(
+        resignBalances[vIndex] = ResignBalance(
             newFinalEpoch.add(1),
             _validatorList[vIndex].selfStake
         );
@@ -447,29 +446,31 @@ contract ProofOfStake {
 
         // Eğer ilgili kayıt varsa ve hedef serbest bırakma zamanı gelecek dönemden önce ise ve kilitli bakiyesi de varsa :)
         if (
-            ResignBalances[vIndex].releaseEpoch != 0 &&
-            ResignBalances[vIndex].releaseEpoch < nextEpoch &&
+            resignBalances[vIndex].releaseEpoch != 0 &&
+            resignBalances[vIndex].releaseEpoch < nextEpoch &&
             _userBalance[msg.sender][BalanceTypes.LOCKED] > 0
         ) {
             // adaylıktan çekilirken ileride çözülmesi için kaydedilen bakiye miktarını al ve kilitli bakiyeden çıkarıp kilitsiz bakiyeye aktar
-            uint256 lockedSelfStake = ResignBalances[vIndex].amount;
+            uint256 lockedSelfStake = resignBalances[vIndex].amount;
 
-            _changeBalance(
-                msg.sender,
-                BalanceTypes.UNLOCKED,
-                BalanceChange.ADD,
-                lockedSelfStake
-            );
+            _lockMyBalance(lockedSelfStake);
 
-            _changeBalance(
-                msg.sender,
-                BalanceTypes.LOCKED,
-                BalanceChange.SUB,
-                lockedSelfStake
-            );
+            // _changeBalance(
+            //     msg.sender,
+            //     BalanceTypes.UNLOCKED,
+            //     BalanceChange.ADD,
+            //     lockedSelfStake
+            // );
+
+            // _changeBalance(
+            //     msg.sender,
+            //     BalanceTypes.LOCKED,
+            //     BalanceChange.SUB,
+            //     lockedSelfStake
+            // );
 
             // bu adaylıktan çekilmeye ait self-stake serbest bırakma kaydını sil
-            delete ResignBalances[vIndex];
+            delete resignBalances[vIndex];
         }
 
         return true;
@@ -495,12 +496,12 @@ contract ProofOfStake {
 
         // Adaylık bitiş tarihi gelecek dönem veya sonrasını gösteriyorsa expired olmamıştır
         if (_validatorList[vIndex].finalEpoch >= nextEpoch) {
-            revert Failed("You are not expired");
+            revert("You are not expired");
         }
 
         // Eğer validator adaylık süresi bitiminden 7 gün geçmemişse hata dön
         if (_validatorList[vIndex].finalEpoch + 7 < nextEpoch) {
-            revert Failed("You have to wait 7 epoch after expired");
+            revert("You have to wait 7 epoch after expired");
         }
 
         // İmkansız ama kullanıcı kilitli bakiyesi ile bu validatör kaydı için kilitlediği selfstakeden azsa hata dön
@@ -508,25 +509,27 @@ contract ProofOfStake {
             _userBalance[msg.sender][BalanceTypes.LOCKED] <
             _validatorList[vIndex].selfStake
         ) {
-            revert Failed("Houston! We have a problem");
+            revert("Houston! We have a problem");
         }
 
         // validatör expired kaydının true olarak değiştir
         _validatorList[vIndex].expired = true;
 
         // kilitli bakiyedeki validatörün son selfstake miktarını kilitsiz bakiyeye taşı
-        _changeBalance(
-            msg.sender,
-            BalanceTypes.LOCKED,
-            BalanceChange.SUB,
-            _validatorList[vIndex].selfStake
-        );
-        _changeBalance(
-            msg.sender,
-            BalanceTypes.UNLOCKED,
-            BalanceChange.ADD,
-            _validatorList[vIndex].selfStake
-        );
+        _unLockMyBalance(_validatorList[vIndex].selfStake);
+
+        // _changeBalance(
+        //     msg.sender,
+        //     BalanceTypes.LOCKED,
+        //     BalanceChange.SUB,
+        //     _validatorList[vIndex].selfStake
+        // );
+        // _changeBalance(
+        //     msg.sender,
+        //     BalanceTypes.UNLOCKED,
+        //     BalanceChange.ADD,
+        //     _validatorList[vIndex].selfStake
+        // );
 
         return true;
     }
@@ -651,11 +654,30 @@ contract ProofOfStake {
                 .add(amount);
         }
 
-        _changeBalance(
-            msg.sender,
-            BalanceTypes.LOCKED,
-            BalanceChange.ADD,
-            amount
+        _lockMyBalance(amount);
+
+        // _changeBalance(
+        //     msg.sender,
+        //     BalanceTypes.LOCKED,
+        //     BalanceChange.ADD,
+        //     amount
+        // );
+        // _changeBalance(
+        //     msg.sender,
+        //     BalanceTypes.UNLOCKED,
+        //     BalanceChange.SUB,
+        //     amount
+        // );
+
+        // _validatorSey[validator][msg.sender] = amount;
+
+        return true;
+    }
+
+    function _lockMyBalance(uint256 amount) internal returns (bool) {
+        require(
+            _userBalance[msg.sender][BalanceTypes.UNLOCKED] >= amount,
+            "Unlocked Balance is not enough"
         );
         _changeBalance(
             msg.sender,
@@ -663,9 +685,32 @@ contract ProofOfStake {
             BalanceChange.SUB,
             amount
         );
+        _changeBalance(
+            msg.sender,
+            BalanceTypes.LOCKED,
+            BalanceChange.ADD,
+            amount
+        );
+        return true;
+    }
 
-        // _validatorSey[validator][msg.sender] = amount;
-
+    function _unLockMyBalance(uint256 amount) internal returns (bool) {
+        require(
+            _userBalance[msg.sender][BalanceTypes.LOCKED] >= amount,
+            "Locked Balance is not enough"
+        );
+        _changeBalance(
+            msg.sender,
+            BalanceTypes.LOCKED,
+            BalanceChange.SUB,
+            amount
+        );
+        _changeBalance(
+            msg.sender,
+            BalanceTypes.UNLOCKED,
+            BalanceChange.ADD,
+            amount
+        );
         return true;
     }
 
