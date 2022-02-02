@@ -179,58 +179,6 @@ contract ProofOfStake {
         return userDeposits[uIndex];
     }
 
-    uint256[] top21;
-    uint256 top21min = 0;
-
-    function addToTop21(uint256 toplamOy, uint256 vIndex)
-        public
-        returns (bool)
-    {
-        uint256 ValidatorOy = (toplamOy * 10**18) + vIndex;
-        uint256 vve = ValidatorVoteExists(vIndex);
-
-        if (vve != 99) {
-            top21[vve] = ValidatorOy;
-            return true;
-        } else {
-            if (top21.length < 21) {
-                top21.push(ValidatorOy);
-                return true;
-            } else {
-                uint256 minimum = MinTop21();
-                if (ValidatorOy > minimum) {
-                    for (uint256 i = 0; i < top21.length; i++) {
-                        if (top21[i] == minimum) {
-                            top21[i] = ValidatorOy;
-                            return true;
-                        }
-                    }
-                }
-            }
-        }
-
-        return false;
-    }
-
-    function MinTop21() public view returns (uint256) {
-        uint256 min = top21[0];
-        for (uint256 i = 1; i < top21.length; i++) {
-            if (top21[i] < min) {
-                min = top21[i];
-            }
-        }
-        return min;
-    }
-
-    function ValidatorVoteExists(uint256 vIndex) public view returns (uint256) {
-        uint256 index = 99;
-        if (top21.length == 0) return index;
-        for (uint256 i = 0; i < top21.length; i++) {
-            if (top21[i] % (1 * 10 * 18) == vIndex) index = i;
-        }
-        return index;
-    }
-
     // Validatör adaylık kaydı (coinbase = node imzalama adresi, commission = oy verenlerin gelirinden alacağı pay ..)
     function registerValidator(
         address coinbase,
