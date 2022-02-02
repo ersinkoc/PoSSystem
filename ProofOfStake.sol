@@ -51,7 +51,7 @@ contract ProofOfStake {
 
     uint256 private _totalDeposits;
     uint256[] private emptyVotes;
-    uint256 private constant _MAX = 5;
+    uint256 private constant _MAX = 19;
     uint256 private constant _MULTIPLE = 1_000_000_000_000;
     uint256 public constant _MINIMIMSELFSTAKE = 10000 * 10**18;
     uint256 private constant _BLOCKTIME = 15;
@@ -263,6 +263,9 @@ contract ProofOfStake {
             // Dönem-> (ValidatorIndex->SelfStake) bilgisini kaydet
             selfStakesForEpoch[firstEpoch + i][vIndex] = selfStake;
             votingPowerForEpoch[firstEpoch + i][vIndex] = selfStake;
+
+            // Toplist düzeltme
+            registerVotes(vIndex, firstEpoch + i);
         }
 
         // setVote(
