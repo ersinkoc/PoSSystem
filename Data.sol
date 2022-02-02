@@ -21,6 +21,7 @@ struct Epoch {
     uint256 totalSelfStakes;
     uint256 totalUserStakes;
     uint256 totalRewardScore;
+    uint256[] voteX;
 }
 
 struct Validator {
@@ -42,7 +43,6 @@ struct Vote {
     uint256 endEpoch;
     bool active;
     uint256 amount;
-    VotingType votingType;
 }
 
 struct UserVotes {
@@ -53,6 +53,11 @@ struct UserVotes {
 struct ValidatorVotes {
     address validator;
     Vote[] user_votes;
+}
+
+struct ValidatorSummary {
+    uint256 vIndex;
+    uint256 totalVotes;
 }
 
 struct Deposit {

@@ -15,18 +15,19 @@ contract ProofOfStake {
     // epoch -> ( validator_index -> user_vote)
     mapping(uint256 => mapping(uint256 => uint256)) public userVotesForEpoch;
 
+    // epoch -> ( validator_index -> user_vote + self-stake)
+    mapping(uint256 => mapping(uint256 => uint256)) public votingPowerForEpoch;
+
     // epoch -> ( siralama ->  validator index )
-    mapping(uint256 => mapping(uint256 => uint256)) public selectedValidators;
-
     /**
-
         Epoch   No      vIndex
         1 =>    1   =   1
                 2   =   15
                 3   =   8
                 ..  =   ..
-                99  =   ..
+                37  =   ..
     */
+    mapping(uint256 => mapping(uint256 => uint256)) public selectedValidators;
 
     User[] private _userList;
     mapping(address => uint256) private _userIndex;
@@ -49,7 +50,9 @@ contract ProofOfStake {
     mapping(address => bool) private _blacklistedAccount;
 
     uint256 private _totalDeposits;
-
+    uint256[] private emptyVotes;
+    uint256 private constant _MAX = 5;
+    uint256 private constant _MULTIPLE = 1_000_000_000_000;
     uint256 public constant _MINIMIMSELFSTAKE = 10000 * 10**18;
     uint256 private constant _BLOCKTIME = 15;
     uint256 private constant _EPOCHTIME = (24 * 60 * 60) / _BLOCKTIME;
@@ -176,6 +179,58 @@ contract ProofOfStake {
         return userDeposits[uIndex];
     }
 
+    uint256[] top21;
+    uint256 top21min = 0;
+
+    function addToTop21(uint256 toplamOy, uint256 vIndex)
+        public
+        returns (bool)
+    {
+        uint256 ValidatorOy = (toplamOy * 10**18) + vIndex;
+        uint256 vve = ValidatorVoteExists(vIndex);
+
+        if (vve != 99) {
+            top21[vve] = ValidatorOy;
+            return true;
+        } else {
+            if (top21.length < 21) {
+                top21.push(ValidatorOy);
+                return true;
+            } else {
+                uint256 minimum = MinTop21();
+                if (ValidatorOy > minimum) {
+                    for (uint256 i = 0; i < top21.length; i++) {
+                        if (top21[i] == minimum) {
+                            top21[i] = ValidatorOy;
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+
+        return false;
+    }
+
+    function MinTop21() public view returns (uint256) {
+        uint256 min = top21[0];
+        for (uint256 i = 1; i < top21.length; i++) {
+            if (top21[i] < min) {
+                min = top21[i];
+            }
+        }
+        return min;
+    }
+
+    function ValidatorVoteExists(uint256 vIndex) public view returns (uint256) {
+        uint256 index = 99;
+        if (top21.length == 0) return index;
+        for (uint256 i = 0; i < top21.length; i++) {
+            if (top21[i] % (1 * 10 * 18) == vIndex) index = i;
+        }
+        return index;
+    }
+
     // Validatör adaylık kaydı (coinbase = node imzalama adresi, commission = oy verenlerin gelirinden alacağı pay ..)
     function registerValidator(
         address coinbase,
@@ -259,6 +314,7 @@ contract ProofOfStake {
 
             // Dönem-> (ValidatorIndex->SelfStake) bilgisini kaydet
             selfStakesForEpoch[firstEpoch + i][vIndex] = selfStake;
+            votingPowerForEpoch[firstEpoch + i][vIndex] = selfStake;
         }
 
         // setVote(
@@ -350,6 +406,10 @@ contract ProofOfStake {
                 _epochList[epoch].totalSelfStakes = _epochList[epoch]
                     .totalSelfStakes
                     .add(increaseSelfStake);
+
+                votingPowerForEpoch[epoch][vIndex] =
+                    votingPowerForEpoch[epoch][vIndex] +
+                    increaseSelfStake;
             }
 
             // Daha önceden aday olmadığı dönemler için toplam selfstake miktarını kaydet
@@ -357,6 +417,8 @@ contract ProofOfStake {
                 _epochList[epoch].totalSelfStakes = _epochList[epoch]
                     .totalSelfStakes
                     .add(newSelfStake);
+
+                votingPowerForEpoch[epoch][vIndex] = newSelfStake;
             }
         }
 
@@ -410,8 +472,12 @@ contract ProofOfStake {
             _epochList[epoch].totalSelfStakes = _epochList[epoch]
                 .totalSelfStakes
                 .sub(selfStake);
-            // selfstake kaydını sil
+
+            //votingPowerForEpoch[epoch][vIndex] = votingPowerForEpoch[epoch][vIndex].sub(selfStake);
+
+            // selfstake ve votingpower kaydını sil
             delete selfStakesForEpoch[epoch][vIndex];
+            delete votingPowerForEpoch[epoch][vIndex];
         }
 
         // yeni adaylık bitiş döneminden 1 dönem sonra sonra parasını alsın kaydı
@@ -627,11 +693,87 @@ contract ProofOfStake {
                 .add(votingPower);
             userVotesForEpoch[epoch][vIndex] = userVotesForEpoch[epoch][vIndex]
                 .add(votingPower);
+
+            registerVotes(vIndex, epoch);
         }
 
         _lockMyBalance(amount);
 
         return true;
+    }
+
+    function registerVotes(
+        //uint256 totalVotes,
+        uint256 vIndex,
+        uint256 epoch
+    ) public returns (bool) {
+        uint256 totalVotes = (_epochList[epoch].totalSelfStakes +
+            _epochList[epoch].totalUserStakes);
+
+        if (epoch > initilazedLastEpoch) return false;
+        uint256 newVotingNumber = (totalVotes * _MULTIPLE) + vIndex;
+        uint256 listedId = checkValidatorOnList(vIndex, epoch);
+
+        if (listedId < _MAX + 1) {
+            _epochList[epoch].voteX[listedId] = newVotingNumber;
+            return true;
+        } else {
+            uint256 minimum = getMinimumVotes(epoch);
+            if (totalVotes > ((minimum - (minimum % _MULTIPLE)) / _MULTIPLE)) {
+                for (uint256 i = 0; i < _epochList[epoch].voteX.length; i++) {
+                    if (_epochList[epoch].voteX[i] == minimum) {
+                        _epochList[epoch].voteX[i] = newVotingNumber;
+                        return true;
+                    }
+                }
+            }
+        }
+        return false;
+    }
+
+    function getMinimumVotes(uint256 epoch) internal view returns (uint256) {
+        uint256 min = type(uint256).max;
+        if (_epochList[epoch].voteX.length == 0) return 0;
+        for (uint256 i = 0; i < _epochList[epoch].voteX.length; i++) {
+            if (
+                _epochList[epoch].voteX[i] < min &&
+                _epochList[epoch].voteX[i] != 0
+            ) {
+                min = _epochList[epoch].voteX[i];
+            }
+        }
+        return min;
+    }
+
+    function checkValidatorOnList(uint256 vIndex, uint256 epoch)
+        internal
+        view
+        returns (uint256)
+    {
+        uint256 index = _MAX + 1;
+        for (uint256 i = 0; i < _epochList[epoch].voteX.length; i++) {
+            if (_epochList[epoch].voteX[i] == 0) return i;
+            if (_epochList[epoch].voteX[i] % _MULTIPLE == vIndex) return i;
+        }
+        return index;
+    }
+
+    function GetValidatorList(uint256 epoch)
+        public
+        view
+        returns (ValidatorSummary[] memory)
+    {
+        ValidatorSummary[] memory v = new ValidatorSummary[](
+            _epochList[epoch].voteX.length
+        );
+        uint256 index;
+        uint256 oy;
+        for (uint256 i = 0; i < _epochList[epoch].voteX.length; i++) {
+            index = _epochList[epoch].voteX[i] % _MULTIPLE;
+            oy = (_epochList[epoch].voteX[i] - index) / _MULTIPLE;
+            v[i] = ValidatorSummary({vIndex: index, totalVotes: oy});
+        }
+        return v;
     }
 
     function _lockMyBalance(uint256 amount) internal returns (bool) {
@@ -842,13 +984,22 @@ contract ProofOfStake {
     }
 
     function _epochInitalize(uint256 _epoch) internal {
+        if (emptyVotes.length != _MAX) {
+            uint256[] memory EmptyVotes = new uint256[](_MAX);
+            for (uint256 i = 0; i < _MAX; i++) {
+                EmptyVotes[i] = uint256(0);
+            }
+            emptyVotes = EmptyVotes;
+        }
+
         if (_epochList[_epoch].epoch == 0) {
             _epochList[_epoch] = Epoch({
                 epoch: _epoch,
                 totalRewards: 0,
                 totalSelfStakes: 0,
                 totalUserStakes: 0,
-                totalRewardScore: 0
+                totalRewardScore: 0,
+                voteX: emptyVotes
             });
             selfStakesForEpoch[_epoch][0] = 0;
         }
