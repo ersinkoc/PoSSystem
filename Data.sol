@@ -43,16 +43,12 @@ struct Vote {
     uint256 endEpoch;
     bool active;
     uint256 amount;
+    uint256 reward;
+    bool claimed;
 }
 
-struct UserVotes {
-    address user;
-    Vote[] user_votes;
-}
-
-struct ValidatorVotes {
-    address validator;
-    Vote[] user_votes;
+struct UserVotesSummary {
+    Vote[] userVotes;
 }
 
 struct ValidatorSummary {

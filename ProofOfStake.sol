@@ -7,16 +7,16 @@ import "./Data.sol";
 contract ProofOfStake {
     using SafeMath for uint256;
 
-    mapping(uint256 => Epoch) public _epochList;
+    mapping(uint256 => Epoch) public _epochList; // _epochList[epoch] = Epoch Information
 
     // epoch -> ( validator_index -> self_stake )
-    mapping(uint256 => mapping(uint256 => uint256)) public selfStakesForEpoch;
+    mapping(uint256 => mapping(uint256 => uint256)) public selfStakesForEpoch; //selfStakesForEpoch[epoch][validator_index] = self-stakes
 
     // epoch -> ( validator_index -> user_vote)
-    mapping(uint256 => mapping(uint256 => uint256)) public userVotesForEpoch;
+    mapping(uint256 => mapping(uint256 => uint256)) public userVotesForEpoch; //userVotesForEpoch[epoch][validator_index] = total_user_votes
 
     // epoch -> ( validator_index -> user_vote + self-stake)
-    mapping(uint256 => mapping(uint256 => uint256)) public votingPowerForEpoch;
+    mapping(uint256 => mapping(uint256 => uint256)) public votingPowerForEpoch; // votingPowerForEpoch[epoch][validator_index] = self-stake + total_user_votes
 
     // epoch -> ( siralama ->  validator index )
     /**
@@ -27,19 +27,19 @@ contract ProofOfStake {
                 ..  =   ..
                 37  =   ..
     */
-    mapping(uint256 => mapping(uint256 => uint256)) public selectedValidators;
+    mapping(uint256 => mapping(uint256 => uint256)) public selectedValidators; // selectedValidators[epoch][order] = validator_index
 
-    User[] private _userList;
-    mapping(address => uint256) private _userIndex;
-    mapping(address => mapping(BalanceTypes => uint256)) private _userBalance;
+    User[] private _userList; // _userList[user_index] = User Information
+    mapping(address => uint256) private _userIndex; // _userIndex[address] = user_index
+    mapping(address => mapping(BalanceTypes => uint256)) private _userBalance; // _userBalance[address][LOCKED/UNLOCKED] = balance
 
-    Validator[] private _validatorList;
-    mapping(address => uint256) private _validatorIndex;
-    mapping(address => address) private coinbaseOwners;
-    mapping(uint256 => ResignBalance) public resignBalances;
+    Validator[] private _validatorList; // _validatorList[validator_index] = Validator Information
+    mapping(address => uint256) private _validatorIndex; // _validatorIndex[coinbase] = validator_index
+    mapping(address => address) private coinbaseOwners; //  coinbaseOwners[coinbase] = user_address
+    mapping(uint256 => ResignBalance) public resignBalances; // resignBalances[validator_index] = ResignBalance Information (release epoch, amount)
 
-    UserVotes[] private userVotes;
-    ValidatorVotes[] private validatorVotes;
+    mapping(uint256 => Vote[]) private userVotes; // userVotes[user_index] = VoteInformation
+    //UserVotes[] private userVotes; //
     UserDeposit[] private userDeposits;
 
     /** Events */
@@ -51,16 +51,18 @@ contract ProofOfStake {
 
     uint256 private _totalDeposits;
     uint256[] private emptyVotes;
-    uint256 private constant _MAX = 19;
-    uint256 private constant _MULTIPLE = 1_000_000_000_000;
-    uint256 public constant _MINIMIMSELFSTAKE = 10000 * 10**18;
-    uint256 private constant _BLOCKTIME = 15;
-    uint256 private constant _EPOCHTIME = (24 * 60 * 60) / _BLOCKTIME;
-    uint256 private constant _VOTINGTIME = (23 * 60 * 60) / _BLOCKTIME;
-    uint256 private constant _EPOCHFIRSTBLOCK = 100000;
-    uint256 private constant _MAXIMUMEPOCHFORVOTES = 7; // 7 epoch
-    uint256 private constant _MAXIMUMEPOCHFORVALIDATORS = 30; // 30 epoch
-    uint256 private constant _VOTINGPERSELFSTAKE = 100;
+
+    uint256 private constant _MAXIMUM_VALIDATORS = 18; // 3 Foundation Nodes + 18 Validators
+    uint256 private constant _MULTIPLE = 1e12; // Just for TopList (12/15/18)
+    uint256 private constant _decimals = 18; // Chain Decimals
+    uint256 private constant _BLOCK_TIME = 15; // Chain Blocktime (seconds)
+    uint256 public constant _MINIMIM_SELF_STAKE = 10000 * 10**_decimals; // Minimum Self-Stake for Candidates
+    uint256 private constant _EPOCHTIME = (24 * 60 * 60) / _BLOCK_TIME; // Epoch time
+    uint256 private constant _VOTINGTIME = (23 * 60 * 60) / _BLOCK_TIME; // Voting End time for Next Epoch
+    uint256 private constant _FIRST_EPOCH_BLOCK_NUMBER = 100000; // Proof-of-stake starting block number :)
+    uint256 private constant _MAXIMUM_EPOCHS_FOR_USER_VOTES = 7; // 7 epochs
+    uint256 private constant _MAXIMUM_EPOCH_FOR_VALIDATORS = 30; // 30 epochs
+    uint256 private constant _COLLECT_VOTES_MULTIPLIER = 100; // Validators can collect vote up to 100x of their self-stake
 
     uint256 private fakeNextEpoch = 0;
     uint256 public initilazedLastEpoch = 0;
@@ -68,7 +70,7 @@ contract ProofOfStake {
     constructor() {
         _userList.push(); // 0-empty
         userDeposits.push(); // 0-empty
-        userVotes.push(); // 0-empty
+        //userVotes.push(); // 0-empty
         _validatorList.push(); // 0-empty
         _setFakeNextEpoch(1);
         epochInit();
@@ -115,7 +117,7 @@ contract ProofOfStake {
 
     /** ////////////////////////////////////////////////////////////////////////////////////////////////////////// */
     // Deneme süresinde kullanıcılara deposito yapmasalar bile bakiye eklemek için
-    function putSomeMoney(address _who, uint256 _amount) public returns (bool) {
+    function FakeDeposit(address _who, uint256 _amount) public returns (bool) {
         return _depositMoney(_who, _amount);
     }
 
@@ -194,22 +196,22 @@ contract ProofOfStake {
 
         // SelfStake nin mininmum selfstake ve üstü olmasını kontrol
         require(
-            selfStake >= _MINIMIMSELFSTAKE,
+            selfStake >= _MINIMIM_SELF_STAKE,
             "Self-Stake is not an acceptable amount"
         );
 
         // // Kullanıcının selfstake yapacak kadar kilitsiz bakiyesi var mı?
         // require(
         //     _userBalance[msg.sender][BalanceTypes.UNLOCKED] >=
-        //         _MINIMIMSELFSTAKE,
+        //         _MINIMIM_SELF_STAKE,
         //     "You do not have enough unlocked balances for Self-Stake."
         // );
 
         // if (
-        //     _userBalance[msg.sender][BalanceTypes.UNLOCKED] < _MINIMIMSELFSTAKE
+        //     _userBalance[msg.sender][BalanceTypes.UNLOCKED] < _MINIMIM_SELF_STAKE
         // ) {
         //     revert NotEnoughBalance(
-        //         _MINIMIMSELFSTAKE,
+        //         _MINIMIM_SELF_STAKE,
         //         _userBalance[msg.sender][BalanceTypes.UNLOCKED]
         //     );
         // }
@@ -224,7 +226,7 @@ contract ProofOfStake {
         uint256 firstEpoch = _calculateNextEpoch();
 
         // Adaylık bitiş tarihini hesapla
-        uint256 finalEpoch = firstEpoch + _MAXIMUMEPOCHFORVALIDATORS - 1;
+        uint256 finalEpoch = firstEpoch + _MAXIMUM_EPOCH_FOR_VALIDATORS - 1;
 
         // Validator kaydını index numarasına göre kaydet
         _validatorList[vIndex] = Validator({
@@ -249,7 +251,7 @@ contract ProofOfStake {
         _lockMyBalance(selfStake);
 
         // Adaylık süresi için dönem bilgilerini güncelle
-        for (uint256 i = 0; i < _MAXIMUMEPOCHFORVALIDATORS; i = i + 1) {
+        for (uint256 i = 0; i < _MAXIMUM_EPOCH_FOR_VALIDATORS; i = i + 1) {
             // Dönem başlık bilgisi hiç yoksa dönem bilgisi üret
             if (_epochList[firstEpoch + i].epoch == 0) {
                 _epochInitalize(firstEpoch + i);
@@ -271,7 +273,7 @@ contract ProofOfStake {
         // setVote(
         //     coinbase,
         //     selfStake,
-        //     _MAXIMUMEPOCHFORVALIDATORS,
+        //     _MAXIMUM_EPOCH_FOR_VALIDATORS,
         //     VotingType.SELFSTAKE
         // );
 
@@ -323,8 +325,8 @@ contract ProofOfStake {
         );
 
         // Uzatılacak dönem maximum aday olunabilir dönem sayısını geçiyorsa bunu olabilecek en geç dönem ile değiştir
-        if (newFinalEpoch - nextEpoch > _MAXIMUMEPOCHFORVALIDATORS) {
-            newFinalEpoch = nextEpoch + _MAXIMUMEPOCHFORVALIDATORS - 1;
+        if (newFinalEpoch - nextEpoch > _MAXIMUM_EPOCH_FOR_VALIDATORS) {
+            newFinalEpoch = nextEpoch + _MAXIMUM_EPOCH_FOR_VALIDATORS - 1;
         }
 
         // Validatör bilgisinde yeni adaylık bitiş dönemini kaydet
@@ -405,7 +407,7 @@ contract ProofOfStake {
 
         // adaylık bitiş döneminden daha sonraki bir dönem ayrılmak istiyorsa (salaksa)
         if (newFinalEpoch > oldFinalEpoch) {
-            revert("You dont need to resign");
+            revert("You do not need to resign");
         }
 
         // Validatorün adaylık bitiş dönemini değiştir
@@ -426,9 +428,13 @@ contract ProofOfStake {
 
             //votingPowerForEpoch[epoch][vIndex] = votingPowerForEpoch[epoch][vIndex].sub(selfStake);
 
-            // selfstake ve votingpower kaydını sil
-            delete selfStakesForEpoch[epoch][vIndex];
-            delete votingPowerForEpoch[epoch][vIndex];
+            // selfstake, uservotes ve votingpower kaydını sıfırla
+            userVotesForEpoch[epoch][vIndex] = 0;
+            selfStakesForEpoch[epoch][vIndex] = 0;
+            votingPowerForEpoch[epoch][vIndex] = 0;
+
+            // Toplist güncellemesi
+            registerVotes(vIndex, epoch);
         }
 
         // yeni adaylık bitiş döneminden 1 dönem sonra sonra parasını alsın kaydı
@@ -574,13 +580,13 @@ contract ProofOfStake {
         if (uIndex == 0) {
             _userList.push();
             userDeposits.push();
-            userVotes.push();
+            //userVotes.push();
 
             uIndex = _userList.length - 1;
 
             _userList[uIndex] = User({user: _user, totalRewards: 0});
             userDeposits[uIndex].user = _user;
-            userVotes[uIndex].user = _user;
+            //userVotes[uIndex].user = _user;
 
             _userIndex[_user] = uIndex;
 
@@ -612,29 +618,35 @@ contract ProofOfStake {
         uint256 votingPower = amount;
 
         uint256 maxVotingPower = (selfStakesForEpoch[nextEpoch][vIndex] *
-            _VOTINGPERSELFSTAKE) - userVotesForEpoch[nextEpoch][vIndex];
+            _COLLECT_VOTES_MULTIPLIER) - userVotesForEpoch[nextEpoch][vIndex];
 
         if (amount > maxVotingPower) votingPower = maxVotingPower;
 
-        if (maximumEpoch == 0 || maximumEpoch > _MAXIMUMEPOCHFORVOTES) {
-            maximumEpoch = _MAXIMUMEPOCHFORVOTES;
+        if (
+            maximumEpoch == 0 || maximumEpoch > _MAXIMUM_EPOCHS_FOR_USER_VOTES
+        ) {
+            maximumEpoch = _MAXIMUM_EPOCHS_FOR_USER_VOTES;
         }
 
         if (nextEpoch - 1 + maximumEpoch > v.finalEpoch) {
             maximumEpoch = v.finalEpoch - nextEpoch;
         }
 
-        uint256 index = _userIndex[msg.sender];
+        uint256 uIndex = _userIndex[msg.sender];
         uint256 endEpoch = nextEpoch - 1 + maximumEpoch;
 
-        userVotes[index].user_votes.push(
+        //uint256 userVoteIndex = userVotes[uIndex].length;
+
+        userVotes[uIndex].push(
             Vote({
                 user: msg.sender,
                 validator: coinbase,
                 startEpoch: nextEpoch,
                 endEpoch: endEpoch,
                 active: true,
-                amount: votingPower
+                amount: votingPower,
+                reward: 0,
+                claimed: false
             })
         );
 
@@ -653,6 +665,18 @@ contract ProofOfStake {
         return true;
     }
 
+    function getUserVotes(address _user) public view returns (Vote[] memory) {
+        uint256 uIndex = _userIndex[_user];
+        Vote[] memory uVotes = new Vote[](userVotes[uIndex].length);
+        for (uint256 i = 0; i < userVotes[uIndex].length; i++) {
+            // if (userVotes[uIndex][i].claimed == false) {
+
+            // }
+            uVotes[i] = userVotes[uIndex][i];
+        }
+        return uVotes;
+    }
+
     function registerVotes(
         //uint256 totalVotes,
         uint256 vIndex,
@@ -662,10 +686,12 @@ contract ProofOfStake {
             _epochList[epoch].totalUserStakes);
 
         if (epoch > initilazedLastEpoch) return false;
+
         uint256 newVotingNumber = (totalVotes * _MULTIPLE) + vIndex;
         uint256 listedId = checkValidatorOnList(vIndex, epoch);
 
-        if (listedId < _MAX + 1) {
+        if (listedId < _MAXIMUM_VALIDATORS + 1) {
+            if (newVotingNumber == vIndex) newVotingNumber = 0; // Validator resigned :)
             _epochList[epoch].voteX[listedId] = newVotingNumber;
             return true;
         } else {
@@ -701,7 +727,7 @@ contract ProofOfStake {
         view
         returns (uint256)
     {
-        uint256 index = _MAX + 1;
+        uint256 index = _MAXIMUM_VALIDATORS + 1;
         for (uint256 i = 0; i < _epochList[epoch].voteX.length; i++) {
             if (_epochList[epoch].voteX[i] == 0) return i;
             if (_epochList[epoch].voteX[i] % _MULTIPLE == vIndex) return i;
@@ -798,7 +824,7 @@ contract ProofOfStake {
             return fakeNextEpoch;
         }
 
-        uint256 blockNumber = block.number - _EPOCHFIRSTBLOCK; // 125334
+        uint256 blockNumber = block.number - _FIRST_EPOCH_BLOCK_NUMBER; // 125334
         uint256 checkBlockNumber = blockNumber % _EPOCHTIME; // 4374
         uint256 nextEpoch = ((blockNumber - checkBlockNumber) / _EPOCHTIME) + 1;
 
@@ -907,7 +933,7 @@ contract ProofOfStake {
         return (count = _userList.length - 1, list = _ulReturn);
     }
 
-    // / Epoch Initalize --- _MAXIMUMEPOCHFORVALIDATORS+7 epoch
+    // / Epoch Initalize --- _MAXIMUM_EPOCH_FOR_VALIDATORS+7 epoch
     // / Anyone Call
     function epochInit() public returns (uint256, uint256) {
         uint256 beforeInitilazedLastEpoch = initilazedLastEpoch;
@@ -915,14 +941,14 @@ contract ProofOfStake {
         if (
             initilazedLastEpoch == 0 ||
             ((initilazedLastEpoch - nextEpoch) <
-                (_MAXIMUMEPOCHFORVALIDATORS + 7))
+                (_MAXIMUM_EPOCH_FOR_VALIDATORS + 7))
         ) {
             uint256 newInits = 0;
             if (initilazedLastEpoch == 0) {
-                newInits = _MAXIMUMEPOCHFORVALIDATORS + 7;
+                newInits = _MAXIMUM_EPOCH_FOR_VALIDATORS + 7;
             } else {
                 newInits =
-                    _MAXIMUMEPOCHFORVALIDATORS +
+                    _MAXIMUM_EPOCH_FOR_VALIDATORS +
                     7 -
                     (initilazedLastEpoch - nextEpoch);
             }
@@ -935,9 +961,9 @@ contract ProofOfStake {
     }
 
     function _epochInitalize(uint256 _epoch) internal {
-        if (emptyVotes.length != _MAX) {
-            uint256[] memory EmptyVotes = new uint256[](_MAX);
-            for (uint256 i = 0; i < _MAX; i++) {
+        if (emptyVotes.length != _MAXIMUM_VALIDATORS) {
+            uint256[] memory EmptyVotes = new uint256[](_MAXIMUM_VALIDATORS);
+            for (uint256 i = 0; i < _MAXIMUM_VALIDATORS; i++) {
                 EmptyVotes[i] = uint256(0);
             }
             emptyVotes = EmptyVotes;
