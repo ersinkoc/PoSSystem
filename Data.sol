@@ -4,6 +4,16 @@ pragma solidity ^0.8.0;
 struct User {
     address user;
     uint256 totalRewards;
+    uint256 totalRewardsFromUserVotes;
+    uint256 totalRewardsFromCommissions;
+    uint256 totalRewardsFromSelfStakes;
+}
+
+struct Reward {
+    address user;
+    uint256 rewardAmount;
+    RewardTypes rewardType;
+    uint256 timestamp;
 }
 
 // getUserList
@@ -34,6 +44,8 @@ struct Validator {
     uint256 finalEpoch;
     bool resigned;
     bool expired;
+    string mail;
+    string webSite;
 }
 
 struct Vote {
@@ -87,4 +99,10 @@ enum VotingType {
 enum BalanceChange {
     ADD,
     SUB
+}
+
+enum RewardTypes {
+    USERVOTES,
+    COMMISSIONS,
+    SELFSTAKES
 }

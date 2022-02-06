@@ -27,6 +27,7 @@ contract ProofOfStake {
                 ..  =   ..
                 37  =   ..
     */
+
     mapping(uint256 => mapping(uint256 => uint256)) public selectedValidators; // selectedValidators[epoch][order] = validator_index
 
     User[] private _userList; // _userList[user_index] = User Information
@@ -42,6 +43,8 @@ contract ProofOfStake {
     //UserVotes[] private userVotes; //
     UserDeposit[] private userDeposits;
 
+    mapping(uint256 => Reward[]) userRewards;
+
     /** Events */
     event Deposited(address indexed user, uint256 amount, uint256 epoch);
     event DotEnoughBalance(uint256 minimum, uint256 balance);
@@ -56,7 +59,7 @@ contract ProofOfStake {
     uint256 private constant _MULTIPLE = 1e12; // Just for TopList (12/15/18)
     uint256 private constant _decimals = 18; // Chain Decimals
     uint256 private constant _BLOCK_TIME = 15; // Chain Blocktime (seconds)
-    uint256 public constant _MINIMIM_SELF_STAKE = 10000 ether; // Minimum Self-Stake for Candidates
+    uint256 private constant _MINIMIM_SELF_STAKE = 10000 ether; // Minimum Self-Stake for Candidates
     uint256 private constant _EPOCHTIME = (24 * 60 * 60) / _BLOCK_TIME; // Epoch time
     uint256 private constant _VOTINGTIME = (23 * 60 * 60) / _BLOCK_TIME; // Voting End time for Next Epoch
     uint256 private constant _FIRST_EPOCH_BLOCK_NUMBER = 100000; // Proof-of-stake starting block number :)
@@ -146,15 +149,15 @@ contract ProofOfStake {
         uint256 epoch = _calculateNextEpoch();
 
         // Kullanıcı index bilgisini getir
-        uint256 index = _userIndex[_who];
+        uint256 uIndex = _userIndex[_who];
 
         // Eğer kayıtlı kullanıcı değilse kaydet
-        if (index == 0) {
-            index = _registerUser(_who);
+        if (uIndex == 0) {
+            uIndex = _registerUser(_who);
         }
 
         // Kullanıcı para yatırma işlemlerine kaydı ekle
-        userDeposits[index].user_deposits.push(Deposit(_amount, epoch));
+        userDeposits[uIndex].user_deposits.push(Deposit(_amount, epoch));
 
         // Sisteme yatırılan paraları artır
         _totalDeposits = _totalDeposits.add(_amount);
@@ -190,6 +193,8 @@ contract ProofOfStake {
         address coinbase,
         uint256 commission,
         string memory name,
+        string memory mail,
+        string memory webSite,
         uint256 selfStake
     ) public UnlockedBalanceCheck(selfStake) returns (uint256) {
         // Daha önce kayıtlı bir coinbase mi diye kontrol
@@ -242,7 +247,9 @@ contract ProofOfStake {
             firstEpoch: firstEpoch,
             finalEpoch: finalEpoch,
             resigned: false,
-            expired: false
+            expired: false,
+            mail: mail,
+            webSite: webSite
         });
 
         // index verisini coinbase adresi ile erişilebilir şekilde kaydet
@@ -271,7 +278,7 @@ contract ProofOfStake {
             votingPowerForEpoch[firstEpoch + i][vIndex] = selfStake;
 
             // Toplist düzeltme
-            registerVotes(vIndex, firstEpoch + i);
+            _registerVotesForToplist(vIndex, firstEpoch + i);
         }
 
         // setVote(
@@ -282,6 +289,20 @@ contract ProofOfStake {
         // );
 
         return vIndex;
+    }
+
+    // Validatör isim, mail ve website adresini değiştirebilir
+    function editValidatorInfo(
+        address coinbase,
+        string memory name,
+        string memory mail,
+        string memory webSite
+    ) public CoinbaseOwnerCheck(coinbase) returns (bool) {
+        uint256 vIndex = _validatorIndex[coinbase];
+        if (bytes(name).length != 0) _validatorList[vIndex].name = name;
+        if (bytes(mail).length != 0) _validatorList[vIndex].name = mail;
+        if (bytes(webSite).length != 0) _validatorList[vIndex].name = webSite;
+        return true;
     }
 
     // Validatör adaylık bitiş süresi değiştirebilir, aynı zamanda selfstake miktarı da artırılabilir
@@ -377,6 +398,8 @@ contract ProofOfStake {
 
                 votingPowerForEpoch[epoch][vIndex] = newSelfStake;
             }
+
+            _registerVotesForToplist(vIndex, epoch);
         }
 
         return true;
@@ -438,7 +461,7 @@ contract ProofOfStake {
             votingPowerForEpoch[epoch][vIndex] = 0;
 
             // Toplist güncellemesi
-            registerVotes(vIndex, epoch);
+            _registerVotesForToplist(vIndex, epoch);
         }
 
         // yeni adaylık bitiş döneminden 1 dönem sonra sonra parasını alsın kaydı
@@ -500,10 +523,10 @@ contract ProofOfStake {
         // Validatör index bilgisini getir
         uint256 vIndex = _getValidatorIndex(coinbase);
 
-        // Bu validatör bu şekilde kilitli bakyesini  geri almış mı?
+        // Bu validatör expired olduktan sonra kilitli bakiyesini  geri almış mı?
         require(
             !_validatorList[vIndex].expired,
-            "You already take your locked selfstake"
+            "You already take your selfstake"
         );
 
         // Bir sonraki dönem bilgisini getir
@@ -514,9 +537,10 @@ contract ProofOfStake {
             revert("You are not expired");
         }
 
-        // Eğer validator adaylık süresi bitiminden 7 gün geçmemişse hata dön
-        if (_validatorList[vIndex].finalEpoch + 7 < nextEpoch) {
-            revert("You have to wait 7 epoch after expired");
+        // Eğer validator adaylık süresi bitiminden 1 dönem geçmemişse hata dön
+        // Kendi kendine adaylığı bitmişse sonraki dönem içinde işleme devam edebilir
+        if (_validatorList[vIndex].finalEpoch + 1 < nextEpoch) {
+            revert("You have to wait 1 epoch after expired");
         }
 
         // İmkansız ama kullanıcı kilitli bakiyesi ile bu validatör kaydı için kilitlediği selfstakeden azsa hata dön
@@ -524,14 +548,14 @@ contract ProofOfStake {
             _userBalance[msg.sender][BalanceTypes.LOCKED] <
             _validatorList[vIndex].selfStake
         ) {
-            revert("Houston! We have a problem");
+            revert("Houston! We have a problem...");
         }
-
-        // validatör expired kaydının true olarak değiştir
-        _validatorList[vIndex].expired = true;
 
         // kilitli bakiyedeki validatörün son selfstake miktarını kilitsiz bakiyeye taşı
         _unLockMyBalance(_validatorList[vIndex].selfStake);
+
+        // validatör expired kaydının true olarak değiştir
+        _validatorList[vIndex].expired = true;
 
         return true;
     }
@@ -589,8 +613,14 @@ contract ProofOfStake {
             //userVotes.push();
 
             uIndex = _userList.length - 1; // userlist son kayıt index i bul
+            _userList[uIndex] = User({
+                user: _user,
+                totalRewards: 0,
+                totalRewardsFromUserVotes: 0,
+                totalRewardsFromCommissions: 0,
+                totalRewardsFromSelfStakes: 0
+            }); // Kullanıcıyı index e göre kaydet
 
-            _userList[uIndex] = User({user: _user, totalRewards: 0}); // Kullanıcıyı index e göre kaydet
             userDeposits[uIndex].user = _user; // userDeposits için kullanıcı kaydet
             //userVotes[uIndex].user = _user;
 
@@ -681,7 +711,7 @@ contract ProofOfStake {
                 .add(votingPower);
 
             // toplist düzenleme fonksiyonunu tetikle
-            registerVotes(vIndex, epoch);
+            _registerVotesForToplist(vIndex, epoch);
         }
 
         // gerçekleşen Oy miktarına göre kullanıcı bakiyesinden kilitlene yap
@@ -702,11 +732,10 @@ contract ProofOfStake {
         return uVotes;
     }
 
-    function registerVotes(
-        //uint256 totalVotes,
-        uint256 vIndex,
-        uint256 epoch
-    ) public returns (bool) {
+    function _registerVotesForToplist(uint256 vIndex, uint256 epoch)
+        internal
+        returns (bool)
+    {
         uint256 totalVotes = (_epochList[epoch].totalSelfStakes +
             _epochList[epoch].totalUserStakes);
 
@@ -885,7 +914,9 @@ contract ProofOfStake {
             firstEpoch: 0,
             finalEpoch: 0,
             resigned: false,
-            expired: false
+            expired: false,
+            mail: "",
+            webSite: ""
         });
 
         if (_validatorList.length == 1 || _vlIndex > _validatorList.length) {
